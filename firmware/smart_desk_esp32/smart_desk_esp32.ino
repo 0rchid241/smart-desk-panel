@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <time.h>
 
 #include "wifi_secrets.h"
 
@@ -51,6 +52,61 @@ void connectWiFi() {
   Serial.println(WiFi.localIP());
 
   showMessage("Wi-Fi", "CONNECTED");
+
+  delay(1000);
+}
+
+void syncTime() {
+  showMessage("TIME", "Syncing...");
+
+  // 대한민국 = UTC+9, 서머타임 없음
+  configTime(
+    9 * 3600,
+    0,
+    "pool.ntp.org",
+    "time.google.com"
+  );
+
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo, 10000)) {
+    Serial.println("Time sync failed");
+    showMessage("TIME", "SYNC FAILED");
+    return;
+  }
+
+  Serial.println("Time sync success");
+}
+
+void showClock() {
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo)) {
+    showMessage("TIME", "NOT AVAILABLE");
+    return;
+  }
+
+  char dateText[20];
+  char timeText[20];
+
+  strftime(dateText, sizeof(dateText), "%Y-%m-%d", &timeinfo);
+  strftime(timeText, sizeof(timeText), "%H:%M:%S", &timeinfo);
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("SMART DESK");
+
+  display.setCursor(0, 20);
+  display.println(dateText);
+
+  display.setTextSize(2);
+  display.setCursor(0, 38);
+  display.println(timeText);
+
+  display.display();
 }
 
 void setup() {
@@ -68,9 +124,13 @@ void setup() {
   }
 
   showMessage("BOOTING...");
+  delay(500);
 
   connectWiFi();
+  syncTime();
 }
 
 void loop() {
+  showClock();
+  delay(1000);
 }
