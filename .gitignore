@@ -1,0 +1,27 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+secrets.h
+wifi_secrets.h
+config.local.h
+
+# Build outputs
+build/
+*.bin
+*.elf
+*.map
+
+# PlatformIO (if used later)
+.pio/
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
