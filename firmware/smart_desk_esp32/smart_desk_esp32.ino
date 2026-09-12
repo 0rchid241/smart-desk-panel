@@ -1,6 +1,9 @@
+#include <WiFi.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+
+#include "wifi_secrets.h"
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -16,9 +19,8 @@ Adafruit_SSD1306 display(
   OLED_RESET
 );
 
-void showMessage(const char* message) {
+void showMessage(const char* line1, const char* line2 = "") {
   display.clearDisplay();
-
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
 
@@ -26,9 +28,29 @@ void showMessage(const char* message) {
   display.println("SMART DESK");
 
   display.setCursor(0, 20);
-  display.println(message);
+  display.println(line1);
+
+  display.setCursor(0, 35);
+  display.println(line2);
 
   display.display();
+}
+
+void connectWiFi() {
+  showMessage("Wi-Fi", "Connecting...");
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("Wi-Fi connected");
+  Serial.println(WiFi.localIP());
+
+  showMessage("Wi-Fi", "CONNECTED");
 }
 
 void setup() {
@@ -45,15 +67,10 @@ void setup() {
     }
   }
 
-  showMessage("READY");
+  showMessage("BOOTING...");
+
+  connectWiFi();
 }
 
 void loop() {
-  if (digitalRead(BUTTON_PIN) == LOW) {
-    showMessage("BUTTON PRESSED");
-  } else {
-    showMessage("READY");
-  }
-
-  delay(30);
 }
