@@ -29,6 +29,7 @@ Adafruit_SSD1306 display(
 
 enum ScreenMode {
   SCREEN_HOME,
+  SCREEN_CALENDAR,
   SCREEN_TIMER,
   SCREEN_NOTIFICATION
 };
@@ -262,15 +263,18 @@ void showHome() {
 
   display.setTextSize(1);
 
-  display.setCursor(0, 37);
+  display.setCursor(0, 36);
   display.println("NEXT");
 
-  display.setCursor(0, 49);
+  display.setCursor(0, 46);
   display.println("No schedule");
 
-  // 현재 좌우 버튼으로 TIMER 이동 가능
-  display.setCursor(74, 56);
-  display.print("<> TIMER");
+  // 현재 좌우 버튼으로 TIMER, CALENDAR 이동 가능
+  display.setCursor(0, 56);
+  display.print("< TIMER");
+
+  display.setCursor(92, 56);
+  display.print("CAL >");
 
   display.display();
 }
@@ -318,6 +322,68 @@ unsigned long getTimerRemainingSeconds() {
 
   return
     (remainingMs + 999) / 1000;
+}
+
+
+// --------------------------------------------------
+// CALENDAR 화면
+// --------------------------------------------------
+
+void showCalendar() {
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo)) {
+    showMessage(
+      "TIME",
+      "NOT AVAILABLE"
+    );
+
+    return;
+  }
+
+  char dateText[20];
+
+  strftime(
+    dateText,
+    sizeof(dateText),
+    "%m/%d %a",
+    &timeinfo
+  );
+
+  display.clearDisplay();
+  display.setTextColor(
+    SSD1306_WHITE
+  );
+
+  display.setTextSize(1);
+
+  display.setCursor(0, 0);
+  display.println("CALENDAR");
+
+  display.setCursor(72, 0);
+  display.print(dateText);
+
+  display.drawLine(
+    0,
+    11,
+    127,
+    11,
+    SSD1306_WHITE
+  );
+
+  display.setCursor(0, 17);
+  display.println("TODAY");
+
+  display.setCursor(0, 29);
+  display.println("No schedule");
+
+  display.setCursor(0, 56);
+  display.print("< HOME");
+
+  display.setCursor(80, 56);
+  display.print("TIMER >");
+
+  display.display();
 }
 
 
@@ -375,13 +441,19 @@ void showTimer() {
     display.println("RUNNING");
 
     display.setCursor(0, 56);
-    display.print("< HOME");
+    display.print("< CAL");
+
+    display.setCursor(86, 56);
+    display.print("HOME >");
   } else {
     display.setCursor(34, 44);
     display.println("OK START");
 
     display.setCursor(0, 56);
-    display.print("< HOME");
+    display.print("< CAL");
+
+    display.setCursor(86, 56);
+    display.print("HOME >");
   }
 
   display.display();
@@ -488,6 +560,49 @@ ButtonEvent readButtonEvent() {
 
 
 // --------------------------------------------------
+// 화면 이동 함수
+// --------------------------------------------------
+
+void moveMainScreen(ButtonEvent button) {
+
+  if (button == BUTTON_RIGHT) {
+
+    if (currentScreen == SCREEN_HOME) {
+      currentScreen = SCREEN_CALENDAR;
+    }
+    else if (
+      currentScreen == SCREEN_CALENDAR
+    ) {
+      currentScreen = SCREEN_TIMER;
+    }
+    else if (
+      currentScreen == SCREEN_TIMER
+    ) {
+      currentScreen = SCREEN_HOME;
+    }
+
+  }
+
+  else if (button == BUTTON_LEFT) {
+
+    if (currentScreen == SCREEN_HOME) {
+      currentScreen = SCREEN_TIMER;
+    }
+    else if (
+      currentScreen == SCREEN_TIMER
+    ) {
+      currentScreen = SCREEN_CALENDAR;
+    }
+    else if (
+      currentScreen == SCREEN_CALENDAR
+    ) {
+      currentScreen = SCREEN_HOME;
+    }
+  }
+}
+
+
+// --------------------------------------------------
 // 버튼 처리
 // --------------------------------------------------
 
@@ -499,15 +614,14 @@ void handleButton(
     return;
   }
 
-
-  // 알림이 떠 있을 때는
-  // OK만 동작
+  // 알림에서는 OK만 사용
   if (
     currentScreen ==
     SCREEN_NOTIFICATION
   ) {
 
     if (button == BUTTON_OK) {
+
       currentScreen =
         SCREEN_HOME;
 
@@ -519,57 +633,28 @@ void handleButton(
     return;
   }
 
-
-  // HOME
+  // LEFT / RIGHT는 기본 화면 이동
   if (
-    currentScreen ==
-    SCREEN_HOME
+    button == BUTTON_LEFT ||
+    button == BUTTON_RIGHT
   ) {
 
-    if (
-      button == BUTTON_LEFT ||
-      button == BUTTON_RIGHT
-    ) {
-      currentScreen =
-        SCREEN_TIMER;
-
-      Serial.println(
-        "Screen: TIMER"
-      );
-    }
+    moveMainScreen(button);
 
     return;
   }
 
-
-  // TIMER
+  // TIMER 화면에서 OK → 시작
   if (
     currentScreen ==
-    SCREEN_TIMER
+    SCREEN_TIMER &&
+    button == BUTTON_OK &&
+    !timerRunning
   ) {
 
-    if (
-      button == BUTTON_LEFT ||
-      button == BUTTON_RIGHT
-    ) {
-      currentScreen =
-        SCREEN_HOME;
+    startTimer();
 
-      Serial.println(
-        "Screen: HOME"
-      );
-
-      return;
-    }
-
-    if (
-      button == BUTTON_OK &&
-      !timerRunning
-    ) {
-      startTimer();
-
-      return;
-    }
+    return;
   }
 }
 
@@ -662,6 +747,13 @@ void loop() {
   ) {
 
     showHome();
+
+  } else if (
+    currentScreen ==
+    SCREEN_CALENDAR
+  ) {
+
+    showCalendar();
 
   } else if (
     currentScreen ==
