@@ -3,9 +3,15 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <time.h>
+#include <Preferences.h>
 
 #include "wifi_secrets.h"
 #include "hangul_renderer.h"
+
+
+// --------------------------------------------------
+// 하드웨어 설정
+// --------------------------------------------------
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -16,6 +22,10 @@
 #define BUTTON_OK_PIN 26
 #define BUTTON_RIGHT_PIN 27
 
+const bool RESET_REMINDER_STORAGE_ON_BOOT =
+  false;
+
+
 Adafruit_SSD1306 display(
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
@@ -23,9 +33,13 @@ Adafruit_SSD1306 display(
   OLED_RESET
 );
 
+Preferences preferences;
+
+bool preferencesReady = false;
+
 
 // --------------------------------------------------
-// 화면 상태
+// 화면 타입
 // --------------------------------------------------
 
 enum ScreenMode {
@@ -35,30 +49,94 @@ enum ScreenMode {
   SCREEN_NOTIFICATION
 };
 
-ScreenMode currentScreen = SCREEN_HOME;
-
 
 // --------------------------------------------------
-// 날짜 기반 일정 데이터
+// 일정 데이터 타입
 // --------------------------------------------------
 
 struct ScheduleEvent {
   int year;
   int month;
   int day;
+
   String title;
 
   uint8_t reminderFlags;
 };
 
 
+// --------------------------------------------------
+// 버튼 이벤트 타입
+// --------------------------------------------------
+
+enum ButtonEvent {
+  BUTTON_NONE,
+  BUTTON_LEFT,
+  BUTTON_OK,
+  BUTTON_RIGHT
+};
+
+
+// --------------------------------------------------
+// 사용자 정의 타입을 사용하는 함수 사전 선언
+// Arduino 자동 프로토타입 문제 방지
+// --------------------------------------------------
+
+uint32_t makeEventHash(
+  const ScheduleEvent& event
+);
+
+String getReminderStorageKey(
+  const ScheduleEvent& event
+);
+
+void loadReminderFlags();
+
+void saveReminderFlags(
+  const ScheduleEvent& event
+);
+
+int getDaysUntil(
+  const ScheduleEvent& event
+);
+
+String getEventDateText(
+  const ScheduleEvent& event
+);
+
+ButtonEvent readButtonEvent();
+
+void moveMainScreen(
+  ButtonEvent button
+);
+
+void handleButton(
+  ButtonEvent button
+);
+
+
+// --------------------------------------------------
+// 현재 화면
+// --------------------------------------------------
+
+ScreenMode currentScreen =
+  SCREEN_HOME;
+
+
+// --------------------------------------------------
+// 날짜 기반 일정 데이터
+// --------------------------------------------------
+
 // 현재는 테스트 데이터.
 // 이후 Google Calendar에서 받아온 데이터로 교체한다.
+//
+// 지금 첫 일정은 NVS 테스트를 위해
+// 2026-09-15(D-1)로 설정되어 있다.
 ScheduleEvent scheduleEvents[] = {
   {
     2026,
     9,
-    15,
+    16,
     "머신러닝 과제",
     0
   },
@@ -78,13 +156,22 @@ ScheduleEvent scheduleEvents[] = {
   }
 };
 
+
 const int SCHEDULE_EVENT_COUNT =
   sizeof(scheduleEvents) /
   sizeof(scheduleEvents[0]);
 
-const int CALENDAR_EVENTS_PER_PAGE = 2;
 
-int calendarPage = 0;
+const int CALENDAR_EVENTS_PER_PAGE =
+  2;
+
+int calendarPage =
+  0;
+
+
+// --------------------------------------------------
+// 일정 알림 플래그
+// --------------------------------------------------
 
 const uint8_t REMINDER_D3 =
   1 << 0;
@@ -100,23 +187,19 @@ const uint8_t REMINDER_DDAY =
 // 알림 상태
 // --------------------------------------------------
 
-String notificationTitle = "";
-String notificationMessage = "";
+String notificationTitle =
+  "";
+
+String notificationMessage =
+  "";
 
 ScreenMode screenBeforeNotification =
   SCREEN_HOME;
 
 
 // --------------------------------------------------
-// 버튼 이벤트
+// 버튼 상태
 // --------------------------------------------------
-
-enum ButtonEvent {
-  BUTTON_NONE,
-  BUTTON_LEFT,
-  BUTTON_OK,
-  BUTTON_RIGHT
-};
 
 const int BUTTON_PINS[3] = {
   BUTTON_LEFT_PIN,
@@ -156,13 +239,157 @@ const unsigned long BUTTON_DEBOUNCE_MS =
 // 타이머 상태
 // --------------------------------------------------
 
-bool timerRunning = false;
+bool timerRunning =
+  false;
 
-unsigned long timerStartedAt = 0;
+unsigned long timerStartedAt =
+  0;
 
 // 아직 테스트용 10초
 const unsigned long TIMER_DURATION_MS =
   10000;
+
+
+// --------------------------------------------------
+// 일정 고유 Hash 생성
+// --------------------------------------------------
+
+uint32_t makeEventHash(
+  const ScheduleEvent& event
+) {
+  // FNV-1a 32-bit
+  uint32_t hash =
+    2166136261UL;
+
+  String identity =
+    String(event.year) + "-" +
+    String(event.month) + "-" +
+    String(event.day) + "|" +
+    event.title;
+
+  const char* text =
+    identity.c_str();
+
+  while (*text) {
+
+    hash ^=
+      static_cast<uint8_t>(
+        *text++
+      );
+
+    hash *=
+      16777619UL;
+  }
+
+  return hash;
+}
+
+
+// --------------------------------------------------
+// 일정 NVS 저장 키 생성
+// --------------------------------------------------
+
+String getReminderStorageKey(
+  const ScheduleEvent& event
+) {
+  char buffer[12];
+
+  snprintf(
+    buffer,
+    sizeof(buffer),
+    "r%08lX",
+    static_cast<unsigned long>(
+      makeEventHash(event)
+    )
+  );
+
+  return String(buffer);
+}
+
+
+// --------------------------------------------------
+// NVS에서 일정 알림 상태 불러오기
+// --------------------------------------------------
+
+void loadReminderFlags() {
+
+  if (!preferencesReady) {
+    return;
+  }
+
+  for (
+    int i = 0;
+    i < SCHEDULE_EVENT_COUNT;
+    i++
+  ) {
+    String key =
+      getReminderStorageKey(
+        scheduleEvents[i]
+      );
+
+    scheduleEvents[i].reminderFlags =
+      preferences.getUChar(
+        key.c_str(),
+        0
+      );
+
+    Serial.print(
+      "Reminder load: "
+    );
+
+    Serial.print(
+      scheduleEvents[i].title
+    );
+
+    Serial.print(
+      " = "
+    );
+
+    Serial.println(
+      scheduleEvents[i].reminderFlags
+    );
+  }
+}
+
+
+// --------------------------------------------------
+// NVS에 일정 알림 상태 저장
+// --------------------------------------------------
+
+void saveReminderFlags(
+  const ScheduleEvent& event
+) {
+
+  if (!preferencesReady) {
+    return;
+  }
+
+  String key =
+    getReminderStorageKey(
+      event
+    );
+
+  preferences.putUChar(
+    key.c_str(),
+    event.reminderFlags
+  );
+
+  Serial.print(
+    "Reminder saved: "
+  );
+
+  Serial.print(
+    event.title
+  );
+
+  Serial.print(
+    " = "
+  );
+
+  Serial.println(
+    event.reminderFlags
+  );
+}
 
 
 // --------------------------------------------------
@@ -217,6 +444,7 @@ void showMessage(
 // --------------------------------------------------
 
 void connectWiFi() {
+
   showMessage(
     "Wi-Fi",
     "Connecting..."
@@ -232,6 +460,7 @@ void connectWiFi() {
     WL_CONNECTED
   ) {
     delay(500);
+
     Serial.print(".");
   }
 
@@ -255,10 +484,11 @@ void connectWiFi() {
 
 
 // --------------------------------------------------
-// NTP 시간
+// NTP 시간 동기화
 // --------------------------------------------------
 
 void syncTime() {
+
   showMessage(
     "TIME",
     "Syncing..."
@@ -279,6 +509,7 @@ void syncTime() {
       10000
     )
   ) {
+
     Serial.println(
       "Time sync failed"
     );
@@ -298,7 +529,7 @@ void syncTime() {
 
 
 // --------------------------------------------------
-// 날짜 계산
+// 윤년 검사
 // --------------------------------------------------
 
 bool isLeapYear(
@@ -315,8 +546,10 @@ bool isLeapYear(
 }
 
 
-// 날짜를 일련번호 형태로 바꾼다.
-// 시간/분/초와 관계없이 날짜 차이만 계산하기 위함.
+// --------------------------------------------------
+// 날짜 → 일련번호
+// --------------------------------------------------
+
 long dateToDayNumber(
   int year,
   int month,
@@ -348,7 +581,9 @@ long dateToDayNumber(
     previousYear / 400;
 
   days +=
-    DAYS_BEFORE_MONTH[month];
+    DAYS_BEFORE_MONTH[
+      month
+    ];
 
   if (
     month > 2 &&
@@ -364,7 +599,7 @@ long dateToDayNumber(
 
 
 // --------------------------------------------------
-// 오늘로부터 일정까지 며칠 남았는지 계산
+// 일정까지 남은 날짜 계산
 // --------------------------------------------------
 
 int getDaysUntil(
@@ -381,10 +616,12 @@ int getDaysUntil(
   }
 
   int currentYear =
-    timeinfo.tm_year + 1900;
+    timeinfo.tm_year +
+    1900;
 
   int currentMonth =
-    timeinfo.tm_mon + 1;
+    timeinfo.tm_mon +
+    1;
 
   int currentDay =
     timeinfo.tm_mday;
@@ -405,7 +642,8 @@ int getDaysUntil(
 
   return
     static_cast<int>(
-      eventDay - today
+      eventDay -
+      today
     );
 }
 
@@ -415,7 +653,9 @@ int getDaysUntil(
 // --------------------------------------------------
 
 int countUpcomingEvents() {
-  int count = 0;
+
+  int count =
+    0;
 
   for (
     int i = 0;
@@ -445,12 +685,14 @@ int countUpcomingEvents() {
 int findUpcomingEventIndexByOrder(
   int targetOrder
 ) {
+
   for (
     int candidateIndex = 0;
     candidateIndex <
       SCHEDULE_EVENT_COUNT;
     candidateIndex++
   ) {
+
     int candidateDays =
       getDaysUntil(
         scheduleEvents[
@@ -464,7 +706,8 @@ int findUpcomingEventIndexByOrder(
       continue;
     }
 
-    int rank = 0;
+    int rank =
+      0;
 
     for (
       int otherIndex = 0;
@@ -472,6 +715,7 @@ int findUpcomingEventIndexByOrder(
         SCHEDULE_EVENT_COUNT;
       otherIndex++
     ) {
+
       if (
         otherIndex ==
         candidateIndex
@@ -492,17 +736,13 @@ int findUpcomingEventIndexByOrder(
         continue;
       }
 
-      // 더 가까운 일정이면
-      // candidate보다 앞에 위치
       if (
         otherDays <
-          candidateDays
+        candidateDays
       ) {
         rank++;
       }
 
-      // 같은 날짜 일정은
-      // 배열 순서를 유지
       else if (
         otherDays ==
           candidateDays &&
@@ -517,8 +757,7 @@ int findUpcomingEventIndexByOrder(
       rank ==
       targetOrder
     ) {
-      return
-        candidateIndex;
+      return candidateIndex;
     }
   }
 
@@ -531,6 +770,7 @@ int findUpcomingEventIndexByOrder(
 // --------------------------------------------------
 
 int findNextEventIndex() {
+
   return
     findUpcomingEventIndexByOrder(
       0
@@ -543,6 +783,7 @@ int findNextEventIndex() {
 // --------------------------------------------------
 
 int getCalendarPageCount() {
+
   int eventCount =
     countUpcomingEvents();
 
@@ -563,12 +804,13 @@ int getCalendarPageCount() {
 
 
 // --------------------------------------------------
-// D-Day 문자열 만들기
+// D-Day 문자열
 // --------------------------------------------------
 
 String getDDayText(
   int daysUntil
 ) {
+
   if (
     daysUntil == 0
   ) {
@@ -581,9 +823,14 @@ String getDDayText(
 }
 
 
+// --------------------------------------------------
+// 날짜에 해당하는 알림 플래그
+// --------------------------------------------------
+
 uint8_t getReminderFlag(
   int daysUntil
 ) {
+
   if (
     daysUntil == 3
   ) {
@@ -607,7 +854,7 @@ uint8_t getReminderFlag(
 
 
 // --------------------------------------------------
-// 일정 날짜 표시용 문자열
+// 일정 날짜 표시 문자열
 // --------------------------------------------------
 
 String getEventDateText(
@@ -623,7 +870,9 @@ String getEventDateText(
     event.day
   );
 
-  return String(buffer);
+  return String(
+    buffer
+  );
 }
 
 
@@ -632,6 +881,7 @@ String getEventDateText(
 // --------------------------------------------------
 
 void showHome() {
+
   struct tm timeinfo;
 
   if (
@@ -639,6 +889,7 @@ void showHome() {
       &timeinfo
     )
   ) {
+
     showMessage(
       "TIME",
       "NOT AVAILABLE"
@@ -672,6 +923,7 @@ void showHome() {
 
   display.setTextSize(1);
 
+
   // 날짜
   display.setCursor(
     0,
@@ -681,6 +933,7 @@ void showHome() {
   display.print(
     dateText
   );
+
 
   // Wi-Fi 상태
   display.setCursor(
@@ -695,11 +948,14 @@ void showHome() {
     display.print(
       "WiFi"
     );
+
   } else {
+
     display.print(
       "OFF"
     );
   }
+
 
   // 현재 시간
   display.setTextSize(2);
@@ -713,6 +969,7 @@ void showHome() {
     timeText
   );
 
+
   // 구분선
   display.drawLine(
     0,
@@ -722,14 +979,17 @@ void showHome() {
     SSD1306_WHITE
   );
 
+
   int nextIndex =
     findNextEventIndex();
 
   display.setTextSize(1);
 
+
   if (
     nextIndex >= 0
   ) {
+
     ScheduleEvent& event =
       scheduleEvents[
         nextIndex
@@ -740,7 +1000,6 @@ void showHome() {
         event
       );
 
-    // NEXT D-2
     display.setCursor(
       0,
       35
@@ -756,7 +1015,6 @@ void showHome() {
       )
     );
 
-    // 한글 일정 제목
     drawUtf8Text(
       display,
       0,
@@ -792,6 +1050,7 @@ void showHome() {
 // --------------------------------------------------
 
 void showCalendar() {
+
   struct tm timeinfo;
 
   if (
@@ -799,6 +1058,7 @@ void showCalendar() {
       &timeinfo
     )
   ) {
+
     showMessage(
       "TIME",
       "NOT AVAILABLE"
@@ -816,17 +1076,17 @@ void showCalendar() {
     &timeinfo
   );
 
+
   int pageCount =
     getCalendarPageCount();
 
-  // 일정 개수가 변경되어
-  // 현재 페이지가 범위를 벗어난 경우
   if (
     calendarPage >=
     pageCount
   ) {
     calendarPage = 0;
   }
+
 
   display.clearDisplay();
 
@@ -835,10 +1095,7 @@ void showCalendar() {
   );
 
 
-  // -------------------------
-  // 상단
-  // -------------------------
-
+  // 상단 제목
   drawUtf8Text(
     display,
     0,
@@ -866,10 +1123,7 @@ void showCalendar() {
   );
 
 
-  // -------------------------
   // 일정 목록
-  // -------------------------
-
   int firstOrder =
     calendarPage *
     CALENDAR_EVENTS_PER_PAGE;
@@ -877,12 +1131,14 @@ void showCalendar() {
   bool eventShown =
     false;
 
+
   for (
     int row = 0;
     row <
       CALENDAR_EVENTS_PER_PAGE;
     row++
   ) {
+
     int order =
       firstOrder +
       row;
@@ -898,24 +1154,27 @@ void showCalendar() {
       continue;
     }
 
-    eventShown = true;
+    eventShown =
+      true;
+
 
     ScheduleEvent& event =
       scheduleEvents[
         eventIndex
       ];
 
+
     int daysUntil =
       getDaysUntil(
         event
       );
+
 
     int y =
       21 +
       row * 18;
 
 
-    // D-Day
     display.setTextSize(1);
 
     display.setCursor(
@@ -930,7 +1189,6 @@ void showCalendar() {
     );
 
 
-    // 한글 일정 제목
     drawUtf8Text(
       display,
       26,
@@ -952,10 +1210,7 @@ void showCalendar() {
   }
 
 
-  // -------------------------
   // 하단 페이지 표시
-  // -------------------------
-
   display.setTextSize(1);
 
   display.setCursor(
@@ -964,6 +1219,7 @@ void showCalendar() {
   );
 
   display.print("<");
+
 
   char pageText[12];
 
@@ -975,6 +1231,7 @@ void showCalendar() {
     pageCount
   );
 
+
   display.setCursor(
     45,
     56
@@ -984,12 +1241,14 @@ void showCalendar() {
     pageText
   );
 
+
   display.setCursor(
     122,
     56
   );
 
   display.print(">");
+
 
   display.display();
 }
@@ -1000,6 +1259,7 @@ void showCalendar() {
 // --------------------------------------------------
 
 void startTimer() {
+
   timerStartedAt =
     millis();
 
@@ -1026,9 +1286,11 @@ unsigned long getTimerRemainingSeconds() {
       1000;
   }
 
+
   unsigned long elapsed =
     millis() -
     timerStartedAt;
+
 
   if (
     elapsed >=
@@ -1037,9 +1299,11 @@ unsigned long getTimerRemainingSeconds() {
     return 0;
   }
 
+
   unsigned long remainingMs =
     TIMER_DURATION_MS -
     elapsed;
+
 
   return
     (remainingMs + 999) /
@@ -1052,8 +1316,10 @@ unsigned long getTimerRemainingSeconds() {
 // --------------------------------------------------
 
 void showTimer() {
+
   unsigned long remainingSeconds =
     getTimerRemainingSeconds();
+
 
   unsigned int minutes =
     remainingSeconds /
@@ -1062,6 +1328,7 @@ void showTimer() {
   unsigned int seconds =
     remainingSeconds %
     60;
+
 
   char timerText[10];
 
@@ -1072,6 +1339,7 @@ void showTimer() {
     minutes,
     seconds
   );
+
 
   display.clearDisplay();
 
@@ -1090,6 +1358,7 @@ void showTimer() {
     "TIMER"
   );
 
+
   display.drawLine(
     0,
     11,
@@ -1097,6 +1366,7 @@ void showTimer() {
     11,
     SSD1306_WHITE
   );
+
 
   display.setTextSize(2);
 
@@ -1109,11 +1379,14 @@ void showTimer() {
     timerText
   );
 
+
   display.setTextSize(1);
+
 
   if (
     timerRunning
   ) {
+
     display.setCursor(
       38,
       44
@@ -1135,6 +1408,7 @@ void showTimer() {
     );
   }
 
+
   display.setCursor(
     0,
     56
@@ -1144,6 +1418,7 @@ void showTimer() {
     "< CAL"
   );
 
+
   display.setCursor(
     86,
     56
@@ -1152,6 +1427,7 @@ void showTimer() {
   display.print(
     "HOME >"
   );
+
 
   display.display();
 }
@@ -1165,6 +1441,7 @@ void triggerNotification(
   const String& title,
   const String& message
 ) {
+
   if (
     currentScreen !=
     SCREEN_NOTIFICATION
@@ -1172,6 +1449,7 @@ void triggerNotification(
     screenBeforeNotification =
       currentScreen;
   }
+
 
   notificationTitle =
     title;
@@ -1181,6 +1459,7 @@ void triggerNotification(
 
   currentScreen =
     SCREEN_NOTIFICATION;
+
 
   Serial.print(
     "Notification: "
@@ -1200,16 +1479,21 @@ void triggerNotification(
 }
 
 
+// --------------------------------------------------
+// 일정 알림 검사
+// --------------------------------------------------
+
 void checkScheduleReminders() {
 
-  // 이미 다른 알림이 떠 있다면
-  // 덮어쓰지 않는다.
+  // 다른 알림이 표시 중이면
+  // 새 알림으로 덮어쓰지 않는다.
   if (
     currentScreen ==
     SCREEN_NOTIFICATION
   ) {
     return;
   }
+
 
   for (
     int i = 0;
@@ -1220,24 +1504,28 @@ void checkScheduleReminders() {
     ScheduleEvent& event =
       scheduleEvents[i];
 
+
     int daysUntil =
       getDaysUntil(
         event
       );
+
 
     uint8_t reminderFlag =
       getReminderFlag(
         daysUntil
       );
 
-    // 오늘은 알림 대상 날짜가 아님
+
+    // D-3 / D-1 / D-DAY가 아님
     if (
       reminderFlag == 0
     ) {
       continue;
     }
 
-    // 이미 이 단계의 알림을 보여줌
+
+    // 이미 해당 단계 알림 완료
     if (
       event.reminderFlags &
       reminderFlag
@@ -1246,9 +1534,15 @@ void checkScheduleReminders() {
     }
 
 
-    // 먼저 완료 처리
+    // 알림 완료 처리
     event.reminderFlags |=
       reminderFlag;
+
+
+    // NVS에도 즉시 저장
+    saveReminderFlags(
+      event
+    );
 
 
     String message =
@@ -1257,7 +1551,9 @@ void checkScheduleReminders() {
       );
 
     message += " ";
-    message += event.title;
+
+    message +=
+      event.title;
 
 
     triggerNotification(
@@ -1265,8 +1561,8 @@ void checkScheduleReminders() {
       message
     );
 
-    // 동시에 여러 일정이 있어도
-    // 한 번에 하나씩만 표시
+
+    // 한 번에 알림 하나만 출력
     return;
   }
 }
@@ -1277,6 +1573,7 @@ void checkScheduleReminders() {
 // --------------------------------------------------
 
 void showNotification() {
+
   display.clearDisplay();
 
   display.setTextColor(
@@ -1284,13 +1581,14 @@ void showNotification() {
   );
 
 
-  // 상단
+  // 알림 제목
   drawUtf8Text(
     display,
     0,
     0,
     notificationTitle
   );
+
 
   display.drawLine(
     0,
@@ -1322,6 +1620,7 @@ void showNotification() {
     "OK DISMISS"
   );
 
+
   display.display();
 }
 
@@ -1343,16 +1642,19 @@ ButtonEvent readButtonEvent() {
         BUTTON_PINS[i]
       );
 
+
     if (
       reading !=
       lastButtonReadings[i]
     ) {
+
       lastButtonChangeAt[i] =
         millis();
 
       lastButtonReadings[i] =
         reading;
     }
+
 
     if (
       millis() -
@@ -1365,19 +1667,23 @@ ButtonEvent readButtonEvent() {
         reading !=
         stableButtonStates[i]
       ) {
+
         stableButtonStates[i] =
           reading;
+
 
         if (
           stableButtonStates[i] ==
           LOW
         ) {
+
           return
             BUTTON_EVENTS[i];
         }
       }
     }
   }
+
 
   return BUTTON_NONE;
 }
@@ -1400,24 +1706,32 @@ void moveMainScreen(
       currentScreen ==
       SCREEN_HOME
     ) {
+
       currentScreen =
         SCREEN_CALENDAR;
 
-    } else if (
+    }
+
+    else if (
       currentScreen ==
       SCREEN_CALENDAR
     ) {
+
       currentScreen =
         SCREEN_TIMER;
 
-    } else if (
+    }
+
+    else if (
       currentScreen ==
       SCREEN_TIMER
     ) {
+
       currentScreen =
         SCREEN_HOME;
     }
   }
+
 
   else if (
     button ==
@@ -1428,20 +1742,27 @@ void moveMainScreen(
       currentScreen ==
       SCREEN_HOME
     ) {
+
       currentScreen =
         SCREEN_TIMER;
 
-    } else if (
+    }
+
+    else if (
       currentScreen ==
       SCREEN_TIMER
     ) {
+
       currentScreen =
         SCREEN_CALENDAR;
 
-    } else if (
+    }
+
+    else if (
       currentScreen ==
       SCREEN_CALENDAR
     ) {
+
       currentScreen =
         SCREEN_HOME;
     }
@@ -1464,7 +1785,8 @@ void handleButton(
     return;
   }
 
-  // 알림 화면에서는 OK만 사용
+
+  // 알림에서는 OK만 사용
   if (
     currentScreen ==
     SCREEN_NOTIFICATION
@@ -1474,6 +1796,7 @@ void handleButton(
       button ==
       BUTTON_OK
     ) {
+
       currentScreen =
         screenBeforeNotification;
 
@@ -1485,19 +1808,23 @@ void handleButton(
     return;
   }
 
-  // CALENDAR에서 OK → 다음 일정 페이지
+
+  // CALENDAR에서 OK → 다음 페이지
   if (
     currentScreen ==
       SCREEN_CALENDAR &&
     button ==
       BUTTON_OK
   ) {
+
     int pageCount =
       getCalendarPageCount();
+
 
     if (
       pageCount > 1
     ) {
+
       calendarPage =
         (
           calendarPage + 1
@@ -1508,6 +1835,7 @@ void handleButton(
     return;
   }
 
+
   // LEFT / RIGHT → 화면 이동
   if (
     button ==
@@ -1515,12 +1843,14 @@ void handleButton(
     button ==
       BUTTON_RIGHT
   ) {
+
     moveMainScreen(
       button
     );
 
     return;
   }
+
 
   // TIMER에서 OK → 시작
   if (
@@ -1530,6 +1860,7 @@ void handleButton(
       BUTTON_OK &&
     !timerRunning
   ) {
+
     startTimer();
 
     return;
@@ -1542,9 +1873,11 @@ void handleButton(
 // --------------------------------------------------
 
 void setup() {
+
   Serial.begin(
     115200
   );
+
 
   pinMode(
     BUTTON_LEFT_PIN,
@@ -1561,10 +1894,12 @@ void setup() {
     INPUT_PULLUP
   );
 
+
   Wire.begin(
     21,
     22
   );
+
 
   if (
     !display.begin(
@@ -1572,6 +1907,7 @@ void setup() {
       SCREEN_ADDRESS
     )
   ) {
+
     Serial.println(
       "OLED init failed"
     );
@@ -1583,15 +1919,54 @@ void setup() {
     }
   }
 
+
   showMessage(
     "BOOTING..."
   );
 
   delay(500);
 
+
   connectWiFi();
 
   syncTime();
+
+
+  // NVS 열기
+  preferencesReady =
+    preferences.begin(
+      "schedule",
+      false
+    );
+
+
+  if (
+    !preferencesReady
+  ) {
+
+    Serial.println(
+      "Preferences init failed"
+    );
+
+  } else {
+
+    Serial.println(
+      "Preferences initialized"
+    );
+
+    if (
+    RESET_REMINDER_STORAGE_ON_BOOT
+    ) {
+      preferences.clear();
+
+      Serial.println(
+        "Reminder storage cleared"
+      );
+    }
+
+    loadReminderFlags();
+  }
+
 
   currentScreen =
     SCREEN_HOME;
@@ -1607,22 +1982,28 @@ void loop() {
   ButtonEvent button =
     readButtonEvent();
 
+
   handleButton(
     button
   );
 
+
+  // 일정 D-3 / D-1 / D-DAY 검사
   checkScheduleReminders();
 
 
-  // 타이머는 다른 화면에서도 계속 진행
+  // 타이머는 다른 화면에서도
+  // 계속 진행한다.
   if (
     timerRunning &&
     millis() -
       timerStartedAt >=
       TIMER_DURATION_MS
   ) {
+
     timerRunning =
       false;
+
 
     triggerNotification(
       "TIMER",
@@ -1636,26 +2017,37 @@ void loop() {
     currentScreen ==
     SCREEN_HOME
   ) {
+
     showHome();
 
-  } else if (
+  }
+
+  else if (
     currentScreen ==
     SCREEN_CALENDAR
   ) {
+
     showCalendar();
 
-  } else if (
+  }
+
+  else if (
     currentScreen ==
     SCREEN_TIMER
   ) {
+
     showTimer();
 
-  } else if (
+  }
+
+  else if (
     currentScreen ==
     SCREEN_NOTIFICATION
   ) {
+
     showNotification();
   }
+
 
   delay(20);
 }
