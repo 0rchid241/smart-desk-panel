@@ -38,6 +38,40 @@ ScreenMode currentScreen = SCREEN_HOME;
 
 
 // --------------------------------------------------
+// 일정 데이터
+// --------------------------------------------------
+
+struct ScheduleEvent {
+  bool active;
+  time_t startTime;
+  String title;
+  bool reminderShown;
+};
+
+ScheduleEvent nextEvent = {
+  false,
+  0,
+  "",
+  false
+};
+
+
+// 테스트용 설정
+const unsigned long TEST_EVENT_AFTER_SECONDS = 45;
+const unsigned long TEST_REMINDER_BEFORE_SECONDS = 15;
+
+
+// --------------------------------------------------
+// 알림 상태
+// --------------------------------------------------
+
+String notificationTitle = "";
+String notificationMessage = "";
+
+ScreenMode screenBeforeNotification = SCREEN_HOME;
+
+
+// --------------------------------------------------
 // 버튼 이벤트
 // --------------------------------------------------
 
@@ -267,7 +301,25 @@ void showHome() {
   display.println("NEXT");
 
   display.setCursor(0, 46);
-  display.println("No schedule");
+
+  if (nextEvent.active) {
+
+    display.print(
+      getEventTimeText()
+    );
+
+    display.print(" ");
+
+    display.print(
+      nextEvent.title
+    );
+
+  } else {
+
+    display.print(
+      "No schedule"
+    );
+  }
 
   // 현재 좌우 버튼으로 TIMER, CALENDAR 이동 가능
   display.setCursor(0, 56);
@@ -374,8 +426,25 @@ void showCalendar() {
   display.setCursor(0, 17);
   display.println("TODAY");
 
-  display.setCursor(0, 29);
-  display.println("No schedule");
+  if (nextEvent.active) {
+
+    display.setCursor(0, 29);
+    display.print(
+      getEventTimeText()
+    );
+
+    display.setCursor(0, 40);
+    display.print(
+      nextEvent.title
+    );
+
+  } else {
+
+    display.setCursor(0, 29);
+    display.print(
+      "No schedule"
+    );
+  }
 
   display.setCursor(0, 56);
   display.print("< HOME");
@@ -461,6 +530,42 @@ void showTimer() {
 
 
 // --------------------------------------------------
+// 일정 알림 검사 함수
+// --------------------------------------------------
+
+void checkScheduleReminder() {
+
+  if (
+    !nextEvent.active ||
+    nextEvent.reminderShown
+  ) {
+    return;
+  }
+
+  time_t now = time(nullptr);
+
+  time_t reminderTime =
+    nextEvent.startTime -
+    TEST_REMINDER_BEFORE_SECONDS;
+
+  if (
+    now >= reminderTime &&
+    currentScreen !=
+    SCREEN_NOTIFICATION
+  ) {
+
+    nextEvent.reminderShown =
+      true;
+
+    triggerNotification(
+      "UPCOMING",
+      nextEvent.title
+    );
+  }
+}
+
+
+// --------------------------------------------------
 // 알림
 // --------------------------------------------------
 
@@ -486,22 +591,100 @@ void showNotification() {
     SSD1306_WHITE
   );
 
-  display.setCursor(0, 22);
+  display.setCursor(0, 19);
   display.println(
-    "TIMER FINISHED"
+    notificationTitle
   );
 
-  display.setCursor(0, 40);
+  display.setCursor(0, 31);
   display.println(
-    "Press OK"
+    notificationMessage
   );
 
-  display.setCursor(0, 52);
+  display.setCursor(0, 48);
   display.println(
-    "to dismiss"
+    "OK to dismiss"
   );
 
   display.display();
+}
+
+
+void triggerNotification(
+  const String& title,
+  const String& message
+) {
+
+  // 알림이 뜨기 직전에 보고 있던 화면 기억
+  if (
+    currentScreen !=
+    SCREEN_NOTIFICATION
+  ) {
+    screenBeforeNotification =
+      currentScreen;
+  }
+
+  notificationTitle = title;
+  notificationMessage = message;
+
+  currentScreen =
+    SCREEN_NOTIFICATION;
+
+  Serial.print("Notification: ");
+  Serial.print(title);
+  Serial.print(" / ");
+  Serial.println(message);
+}
+
+
+void createTestSchedule() {
+
+  time_t now = time(nullptr);
+
+  nextEvent.active = true;
+
+  nextEvent.startTime =
+    now + TEST_EVENT_AFTER_SECONDS;
+
+  nextEvent.title =
+    "Test event";
+
+  nextEvent.reminderShown =
+    false;
+
+  Serial.println(
+    "Test schedule created"
+  );
+}
+
+
+// --------------------------------------------------
+// 일정 시간을 문자열로 만드는 함수
+// --------------------------------------------------
+
+String getEventTimeText() {
+
+  if (!nextEvent.active) {
+    return "--:--";
+  }
+
+  struct tm eventTimeInfo;
+
+  localtime_r(
+    &nextEvent.startTime,
+    &eventTimeInfo
+  );
+
+  char buffer[6];
+
+  strftime(
+    buffer,
+    sizeof(buffer),
+    "%H:%M",
+    &eventTimeInfo
+  );
+
+  return String(buffer);
 }
 
 
@@ -623,7 +806,7 @@ void handleButton(
     if (button == BUTTON_OK) {
 
       currentScreen =
-        SCREEN_HOME;
+        screenBeforeNotification;
 
       Serial.println(
         "Notification dismissed"
@@ -705,6 +888,8 @@ void setup() {
   connectWiFi();
   syncTime();
 
+  createTestSchedule();
+
   currentScreen =
     SCREEN_HOME;
 }
@@ -721,6 +906,8 @@ void loop() {
 
   handleButton(button);
 
+  checkScheduleReminder();
+
 
   // 타이머는 현재 보고 있는 화면과
   // 상관없이 계속 진행한다.
@@ -732,10 +919,8 @@ void loop() {
 
     timerRunning = false;
 
-    currentScreen =
-      SCREEN_NOTIFICATION;
-
-    Serial.println(
+    triggerNotification(
+      "TIMER",
       "Timer finished"
     );
   }
