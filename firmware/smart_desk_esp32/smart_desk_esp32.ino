@@ -4,6 +4,9 @@
 #include <Adafruit_SSD1306.h>
 #include <time.h>
 #include <Preferences.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 
 #include "wifi_secrets.h"
 #include "hangul_renderer.h"
@@ -127,39 +130,13 @@ ScreenMode currentScreen =
 // 날짜 기반 일정 데이터
 // --------------------------------------------------
 
-// 현재는 테스트 데이터.
-// 이후 Google Calendar에서 받아온 데이터로 교체한다.
-//
-// 지금 첫 일정은 NVS 테스트를 위해
-// 2026-09-15(D-1)로 설정되어 있다.
-ScheduleEvent scheduleEvents[] = {
-  {
-    2026,
-    9,
-    16,
-    "머신러닝 과제",
-    0
-  },
-  {
-    2026,
-    9,
-    18,
-    "캡스톤 발표",
-    0
-  },
-  {
-    2026,
-    9,
-    25,
-    "졸업작품 점검",
-    0
-  }
-};
+const int MAX_SCHEDULE_EVENTS = 20;
 
+ScheduleEvent scheduleEvents[
+  MAX_SCHEDULE_EVENTS
+];
 
-const int SCHEDULE_EVENT_COUNT =
-  sizeof(scheduleEvents) /
-  sizeof(scheduleEvents[0]);
+int scheduleEventCount = 0;
 
 
 const int CALENDAR_EVENTS_PER_PAGE =
@@ -319,7 +296,7 @@ void loadReminderFlags() {
 
   for (
     int i = 0;
-    i < SCHEDULE_EVENT_COUNT;
+    i < scheduleEventCount;
     i++
   ) {
     String key =
@@ -529,6 +506,254 @@ void syncTime() {
 
 
 // --------------------------------------------------
+// Google Calendar 일정 가져오기
+// --------------------------------------------------
+
+bool fetchCalendarEvents() {
+
+  if (
+    WiFi.status() !=
+    WL_CONNECTED
+  ) {
+    Serial.println(
+      "Calendar: Wi-Fi not connected"
+    );
+
+    return false;
+  }
+
+
+  Serial.println();
+  Serial.println(
+    "Calendar fetch start"
+  );
+
+
+  WiFiClientSecure client;
+
+  // 현재는 연결 검증 단계이므로
+  // 서버 인증서 검증은 생략한다.
+  client.setInsecure();
+
+
+  HTTPClient http;
+
+  http.setFollowRedirects(
+    HTTPC_STRICT_FOLLOW_REDIRECTS
+  );
+
+
+  if (
+    !http.begin(
+      client,
+      CALENDAR_API_URL
+    )
+  ) {
+    Serial.println(
+      "Calendar: HTTP begin failed"
+    );
+
+    return false;
+  }
+
+
+  int httpCode =
+    http.GET();
+
+
+  if (
+    httpCode !=
+    HTTP_CODE_OK
+  ) {
+    Serial.print(
+      "Calendar HTTP error: "
+    );
+
+    Serial.println(
+      httpCode
+    );
+
+    http.end();
+
+    return false;
+  }
+
+
+  String payload =
+    http.getString();
+
+  http.end();
+
+
+  // -------------------------
+  // JSON 파싱
+  // -------------------------
+
+  JsonDocument document;
+
+  DeserializationError error =
+    deserializeJson(
+      document,
+      payload
+    );
+
+
+  if (error) {
+
+    Serial.print(
+      "Calendar JSON error: "
+    );
+
+    Serial.println(
+      error.c_str()
+    );
+
+    return false;
+  }
+
+
+  bool ok =
+    document["ok"] | false;
+
+
+  if (!ok) {
+
+    Serial.println(
+      "Calendar API returned ok=false"
+    );
+
+    return false;
+  }
+
+
+  JsonArray events =
+    document["events"]
+      .as<JsonArray>();
+
+
+
+  // -------------------------
+  // 기존 일정 초기화
+  // -------------------------
+
+  scheduleEventCount =
+    0;
+
+
+
+  // -------------------------
+  // JSON → ScheduleEvent
+  // -------------------------
+
+  for (
+    JsonObject item : events
+  ) {
+
+    if (
+      scheduleEventCount >=
+      MAX_SCHEDULE_EVENTS
+    ) {
+      Serial.println(
+        "Calendar event limit reached"
+      );
+
+      break;
+    }
+
+
+    const char* title =
+      item["title"] | "";
+
+    const char* date =
+      item["date"] | "";
+
+
+    int year;
+    int month;
+    int day;
+
+
+    if (
+      !parseCalendarDate(
+        String(date),
+        year,
+        month,
+        day
+      )
+    ) {
+      Serial.print(
+        "Invalid calendar date: "
+      );
+
+      Serial.println(
+        date
+      );
+
+      continue;
+    }
+
+
+    ScheduleEvent& event =
+      scheduleEvents[
+        scheduleEventCount
+      ];
+
+
+    event.year =
+      year;
+
+    event.month =
+      month;
+
+    event.day =
+      day;
+
+    event.title =
+      String(title);
+
+    event.reminderFlags =
+      0;
+
+
+    scheduleEventCount++;
+
+
+    Serial.print(
+      "Calendar event: "
+    );
+
+    Serial.print(
+      date
+    );
+
+    Serial.print(
+      " / "
+    );
+
+    Serial.println(
+      title
+    );
+  }
+
+
+  Serial.print(
+    "Calendar loaded: "
+  );
+
+  Serial.print(
+    scheduleEventCount
+  );
+
+  Serial.println(
+    " events"
+  );
+
+
+  return true;
+}
+
+
+// --------------------------------------------------
 // 윤년 검사
 // --------------------------------------------------
 
@@ -599,6 +824,62 @@ long dateToDayNumber(
 
 
 // --------------------------------------------------
+// YYYY-MM-DD 문자열 파싱
+// --------------------------------------------------
+
+bool parseCalendarDate(
+  const String& dateText,
+  int& year,
+  int& month,
+  int& day
+) {
+  if (
+    dateText.length() != 10
+  ) {
+    return false;
+  }
+
+  if (
+    dateText.charAt(4) != '-' ||
+    dateText.charAt(7) != '-'
+  ) {
+    return false;
+  }
+
+  year =
+    dateText.substring(
+      0,
+      4
+    ).toInt();
+
+  month =
+    dateText.substring(
+      5,
+      7
+    ).toInt();
+
+  day =
+    dateText.substring(
+      8,
+      10
+    ).toInt();
+
+
+  if (
+    year < 2000 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+// --------------------------------------------------
 // 일정까지 남은 날짜 계산
 // --------------------------------------------------
 
@@ -659,7 +940,7 @@ int countUpcomingEvents() {
 
   for (
     int i = 0;
-    i < SCHEDULE_EVENT_COUNT;
+    i < scheduleEventCount;
     i++
   ) {
     int daysUntil =
@@ -689,7 +970,7 @@ int findUpcomingEventIndexByOrder(
   for (
     int candidateIndex = 0;
     candidateIndex <
-      SCHEDULE_EVENT_COUNT;
+      scheduleEventCount;
     candidateIndex++
   ) {
 
@@ -712,7 +993,7 @@ int findUpcomingEventIndexByOrder(
     for (
       int otherIndex = 0;
       otherIndex <
-        SCHEDULE_EVENT_COUNT;
+        scheduleEventCount;
       otherIndex++
     ) {
 
@@ -1015,10 +1296,11 @@ void showHome() {
       )
     );
 
-    drawUtf8Text(
+    drawScrollingUtf8Text(
       display,
       0,
       46,
+      128,
       event.title
     );
 
@@ -1189,10 +1471,11 @@ void showCalendar() {
     );
 
 
-    drawUtf8Text(
+    drawScrollingUtf8Text(
       display,
-      26,
+      34,
       y,
+      94,
       event.title
     );
   }
@@ -1497,7 +1780,7 @@ void checkScheduleReminders() {
 
   for (
     int i = 0;
-    i < SCHEDULE_EVENT_COUNT;
+    i < scheduleEventCount;
     i++
   ) {
 
@@ -1600,12 +1883,13 @@ void showNotification() {
 
 
   // 알림 내용
-  drawUtf8Text(
-    display,
-    0,
-    22,
-    notificationMessage
-  );
+  drawScrollingUtf8Text(
+      display,
+      0,
+      24,
+      128,
+      notificationMessage
+    );
 
 
   // 하단 안내
@@ -1930,6 +2214,24 @@ void setup() {
   connectWiFi();
 
   syncTime();
+
+
+  // 실제 Google Calendar 일정 가져오기
+  bool calendarLoaded =
+    fetchCalendarEvents();
+
+
+  if (
+    calendarLoaded
+  ) {
+    Serial.println(
+      "Calendar sync success"
+    );
+  } else {
+    Serial.println(
+      "Calendar sync failed"
+    );
+  }
 
 
   // NVS 열기
