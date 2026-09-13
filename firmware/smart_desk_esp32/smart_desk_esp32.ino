@@ -28,6 +28,10 @@
 const bool RESET_REMINDER_STORAGE_ON_BOOT =
   false;
 
+// 오프라인 캐시 테스트용. 최종값은 false 유지.
+const bool FORCE_OFFLINE_TEST_MODE =
+  false;
+
 
 Adafruit_SSD1306 display(
   SCREEN_WIDTH,
@@ -37,8 +41,10 @@ Adafruit_SSD1306 display(
 );
 
 Preferences preferences;
+Preferences calendarCachePreferences;
 
 bool preferencesReady = false;
+bool calendarCacheReady = false;
 
 
 // --------------------------------------------------
@@ -114,9 +120,23 @@ bool parseCalendarDate(
   int& day
 );
 
+bool parseCalendarPayload(
+  const String& payload
+);
+
+bool saveCalendarCache(
+  const String& payload
+);
+
+bool loadCalendarCache();
+
 bool fetchCalendarEvents();
 
 bool syncCalendarEvents();
+
+bool getCurrentTimeInfo(
+  struct tm& timeinfo
+);
 
 ButtonEvent readButtonEvent();
 
@@ -242,11 +262,29 @@ const unsigned long TIMER_DURATION_MS =
 // Google Calendar 자동 동기화
 // --------------------------------------------------
 
+// 최종 자동 동기화 주기: 15분
 const unsigned long CALENDAR_SYNC_INTERVAL_MS =
   15UL * 60UL * 1000UL;
 
 unsigned long lastCalendarSyncAt =
   0;
+
+
+// --------------------------------------------------
+// Wi-Fi 오프라인 / 재연결 상태
+// --------------------------------------------------
+
+const unsigned long WIFI_CONNECT_TIMEOUT_MS =
+  12000;
+
+const unsigned long WIFI_RECONNECT_INTERVAL_MS =
+  30000;
+
+unsigned long lastWifiReconnectAt =
+  0;
+
+bool wifiWasConnected =
+  false;
 
 
 // --------------------------------------------------
@@ -442,11 +480,15 @@ void showMessage(
 // Wi-Fi
 // --------------------------------------------------
 
-void connectWiFi() {
+bool connectWiFi() {
 
   showMessage(
     "Wi-Fi",
     "Connecting..."
+  );
+
+  WiFi.mode(
+    WIFI_STA
   );
 
   WiFi.begin(
@@ -454,16 +496,38 @@ void connectWiFi() {
     WIFI_PASSWORD
   );
 
+  unsigned long startedAt =
+    millis();
+
   while (
     WiFi.status() !=
-    WL_CONNECTED
+      WL_CONNECTED &&
+    millis() - startedAt <
+      WIFI_CONNECT_TIMEOUT_MS
   ) {
     delay(500);
-
     Serial.print(".");
   }
 
   Serial.println();
+
+  if (
+    WiFi.status() !=
+    WL_CONNECTED
+  ) {
+    Serial.println(
+      "Wi-Fi connect timeout"
+    );
+
+    showMessage(
+      "Wi-Fi",
+      "OFFLINE MODE"
+    );
+
+    delay(1000);
+
+    return false;
+  }
 
   Serial.println(
     "Wi-Fi connected"
@@ -479,6 +543,8 @@ void connectWiFi() {
   );
 
   delay(1000);
+
+  return true;
 }
 
 
@@ -528,88 +594,38 @@ void syncTime() {
 
 
 // --------------------------------------------------
-// Google Calendar 일정 가져오기
+// 현재 시간이 유효한지 확인
 // --------------------------------------------------
 
-bool fetchCalendarEvents() {
+bool getCurrentTimeInfo(
+  struct tm& timeinfo
+) {
+  time_t now =
+    time(nullptr);
 
+  // NTP 동기화 전 ESP32는 1970년대 값에 가깝다.
   if (
-    WiFi.status() !=
-    WL_CONNECTED
+    now < 1700000000
   ) {
-    Serial.println(
-      "Calendar: Wi-Fi not connected"
-    );
-
     return false;
   }
 
-
-  Serial.println();
-  Serial.println(
-    "Calendar fetch start"
+  localtime_r(
+    &now,
+    &timeinfo
   );
 
-
-  WiFiClientSecure client;
-
-  // 현재는 연결 검증 단계이므로
-  // 서버 인증서 검증은 생략한다.
-  client.setInsecure();
+  return true;
+}
 
 
-  HTTPClient http;
+// --------------------------------------------------
+// Calendar JSON → 일정 데이터 적용
+// --------------------------------------------------
 
-  http.setFollowRedirects(
-    HTTPC_STRICT_FOLLOW_REDIRECTS
-  );
-
-
-  if (
-    !http.begin(
-      client,
-      CALENDAR_API_URL
-    )
-  ) {
-    Serial.println(
-      "Calendar: HTTP begin failed"
-    );
-
-    return false;
-  }
-
-
-  int httpCode =
-    http.GET();
-
-
-  if (
-    httpCode !=
-    HTTP_CODE_OK
-  ) {
-    Serial.print(
-      "Calendar HTTP error: "
-    );
-
-    Serial.println(
-      httpCode
-    );
-
-    http.end();
-
-    return false;
-  }
-
-
-  String payload =
-    http.getString();
-
-  http.end();
-
-
-  // -------------------------
-  // JSON 파싱
-  // -------------------------
+bool parseCalendarPayload(
+  const String& payload
+) {
 
   JsonDocument document;
 
@@ -619,9 +635,7 @@ bool fetchCalendarEvents() {
       payload
     );
 
-
   if (error) {
-
     Serial.print(
       "Calendar JSON error: "
     );
@@ -633,13 +647,10 @@ bool fetchCalendarEvents() {
     return false;
   }
 
-
   bool ok =
     document["ok"] | false;
 
-
   if (!ok) {
-
     Serial.println(
       "Calendar API returned ok=false"
     );
@@ -647,25 +658,14 @@ bool fetchCalendarEvents() {
     return false;
   }
 
-
   JsonArray events =
     document["events"]
       .as<JsonArray>();
 
-
-
-  // -------------------------
-  // 기존 일정 초기화
-  // -------------------------
-
+  // JSON 전체가 정상임을 확인한 뒤에만
+  // 현재 일정 목록을 교체한다.
   scheduleEventCount =
     0;
-
-
-
-  // -------------------------
-  // JSON → ScheduleEvent
-  // -------------------------
 
   for (
     JsonObject item : events
@@ -682,18 +682,15 @@ bool fetchCalendarEvents() {
       break;
     }
 
-
     const char* title =
       item["title"] | "";
 
     const char* date =
       item["date"] | "";
 
-
     int year;
     int month;
     int day;
-
 
     if (
       !parseCalendarDate(
@@ -714,12 +711,10 @@ bool fetchCalendarEvents() {
       continue;
     }
 
-
     ScheduleEvent& event =
       scheduleEvents[
         scheduleEventCount
       ];
-
 
     event.year =
       year;
@@ -736,9 +731,7 @@ bool fetchCalendarEvents() {
     event.reminderFlags =
       0;
 
-
     scheduleEventCount++;
-
 
     Serial.print(
       "Calendar event: "
@@ -757,7 +750,6 @@ bool fetchCalendarEvents() {
     );
   }
 
-
   Serial.print(
     "Calendar loaded: "
   );
@@ -770,6 +762,191 @@ bool fetchCalendarEvents() {
     " events"
   );
 
+  return true;
+}
+
+
+// --------------------------------------------------
+// 마지막 Calendar JSON을 NVS에 저장
+// --------------------------------------------------
+
+bool saveCalendarCache(
+  const String& payload
+) {
+
+  if (!calendarCacheReady) {
+    return false;
+  }
+
+  size_t written =
+    calendarCachePreferences.putString(
+      "json",
+      payload
+    );
+
+  if (written == 0) {
+    Serial.println(
+      "Calendar cache save failed"
+    );
+
+    return false;
+  }
+
+  Serial.print(
+    "Calendar cache saved: "
+  );
+
+  Serial.print(
+    written
+  );
+
+  Serial.println(
+    " bytes"
+  );
+
+  return true;
+}
+
+
+// --------------------------------------------------
+// NVS에서 마지막 Calendar 일정 복구
+// --------------------------------------------------
+
+bool loadCalendarCache() {
+
+  if (!calendarCacheReady) {
+    return false;
+  }
+
+  String payload =
+    calendarCachePreferences.getString(
+      "json",
+      ""
+    );
+
+  if (
+    payload.length() == 0
+  ) {
+    Serial.println(
+      "Calendar cache empty"
+    );
+
+    return false;
+  }
+
+  Serial.println(
+    "Calendar cache found"
+  );
+
+  if (
+    !parseCalendarPayload(
+      payload
+    )
+  ) {
+    Serial.println(
+      "Calendar cache invalid"
+    );
+
+    return false;
+  }
+
+  if (
+    preferencesReady
+  ) {
+    loadReminderFlags();
+  }
+
+  Serial.println(
+    "Calendar cache loaded"
+  );
+
+  return true;
+}
+
+
+// --------------------------------------------------
+// Google Calendar 일정 가져오기
+// --------------------------------------------------
+
+bool fetchCalendarEvents() {
+
+  if (
+    WiFi.status() !=
+    WL_CONNECTED
+  ) {
+    Serial.println(
+      "Calendar: Wi-Fi not connected"
+    );
+
+    return false;
+  }
+
+  Serial.println();
+  Serial.println(
+    "Calendar fetch start"
+  );
+
+  WiFiClientSecure client;
+
+  // 현재 단계에서는 인증서 검증을 생략한다.
+  client.setInsecure();
+
+  HTTPClient http;
+
+  http.setFollowRedirects(
+    HTTPC_STRICT_FOLLOW_REDIRECTS
+  );
+
+  if (
+    !http.begin(
+      client,
+      CALENDAR_API_URL
+    )
+  ) {
+    Serial.println(
+      "Calendar: HTTP begin failed"
+    );
+
+    return false;
+  }
+
+  int httpCode =
+    http.GET();
+
+  if (
+    httpCode !=
+    HTTP_CODE_OK
+  ) {
+    Serial.print(
+      "Calendar HTTP error: "
+    );
+
+    Serial.println(
+      httpCode
+    );
+
+    http.end();
+
+    return false;
+  }
+
+  String payload =
+    http.getString();
+
+  http.end();
+
+  if (
+    !parseCalendarPayload(
+      payload
+    )
+  ) {
+    return false;
+  }
+
+  // 정상 데이터만 캐시에 저장한다.
+  saveCalendarCache(
+    payload
+  );
 
   return true;
 }
@@ -786,30 +963,23 @@ bool syncCalendarEvents() {
     "Calendar sync start"
   );
 
-
   bool success =
     fetchCalendarEvents();
 
-
   if (!success) {
-
     Serial.println(
-      "Calendar sync failed"
+      "Calendar sync failed - keeping current/cache data"
     );
 
     return false;
   }
 
-
-  // fetchCalendarEvents()가 새 일정 객체를 만들면서
-  // reminderFlags를 0으로 초기화하므로
-  // 기존 NVS 알림 기록을 다시 불러온다.
+  // 새 일정 객체에 기존 알림 기록을 다시 적용한다.
   if (
     preferencesReady
   ) {
     loadReminderFlags();
   }
-
 
   Serial.println(
     "Calendar sync success"
@@ -955,8 +1125,8 @@ int getDaysUntil(
   struct tm timeinfo;
 
   if (
-    !getLocalTime(
-      &timeinfo
+    !getCurrentTimeInfo(
+      timeinfo
     )
   ) {
     return 99999;
@@ -996,10 +1166,22 @@ int getDaysUntil(
 
 
 // --------------------------------------------------
-// 앞으로 남은 일정 개수
+// 앞으로 표시할 일정 개수
 // --------------------------------------------------
 
 int countUpcomingEvents() {
+
+  struct tm timeinfo;
+  bool timeAvailable =
+    getCurrentTimeInfo(
+      timeinfo
+    );
+
+  // 시간을 모르는 오프라인 부팅에서는
+  // 캐시에 들어 있던 일정을 모두 보여준다.
+  if (!timeAvailable) {
+    return scheduleEventCount;
+  }
 
   int count =
     0;
@@ -1033,6 +1215,12 @@ int findUpcomingEventIndexByOrder(
   int targetOrder
 ) {
 
+  struct tm timeinfo;
+  bool timeAvailable =
+    getCurrentTimeInfo(
+      timeinfo
+    );
+
   for (
     int candidateIndex = 0;
     candidateIndex <
@@ -1040,17 +1228,32 @@ int findUpcomingEventIndexByOrder(
     candidateIndex++
   ) {
 
-    int candidateDays =
-      getDaysUntil(
-        scheduleEvents[
-          candidateIndex
-        ]
-      );
+    long candidateValue;
 
-    if (
-      candidateDays < 0
-    ) {
-      continue;
+    if (timeAvailable) {
+      int candidateDays =
+        getDaysUntil(
+          scheduleEvents[
+            candidateIndex
+          ]
+        );
+
+      if (
+        candidateDays < 0
+      ) {
+        continue;
+      }
+
+      candidateValue =
+        candidateDays;
+
+    } else {
+      candidateValue =
+        dateToDayNumber(
+          scheduleEvents[candidateIndex].year,
+          scheduleEvents[candidateIndex].month,
+          scheduleEvents[candidateIndex].day
+        );
     }
 
     int rank =
@@ -1070,29 +1273,44 @@ int findUpcomingEventIndexByOrder(
         continue;
       }
 
-      int otherDays =
-        getDaysUntil(
-          scheduleEvents[
-            otherIndex
-          ]
-        );
+      long otherValue;
 
-      if (
-        otherDays < 0
-      ) {
-        continue;
+      if (timeAvailable) {
+        int otherDays =
+          getDaysUntil(
+            scheduleEvents[
+              otherIndex
+            ]
+          );
+
+        if (
+          otherDays < 0
+        ) {
+          continue;
+        }
+
+        otherValue =
+          otherDays;
+
+      } else {
+        otherValue =
+          dateToDayNumber(
+            scheduleEvents[otherIndex].year,
+            scheduleEvents[otherIndex].month,
+            scheduleEvents[otherIndex].day
+          );
       }
 
       if (
-        otherDays <
-        candidateDays
+        otherValue <
+        candidateValue
       ) {
         rank++;
       }
 
       else if (
-        otherDays ==
-          candidateDays &&
+        otherValue ==
+          candidateValue &&
         otherIndex <
           candidateIndex
       ) {
@@ -1231,36 +1449,32 @@ void showHome() {
 
   struct tm timeinfo;
 
-  if (
-    !getLocalTime(
-      &timeinfo
-    )
-  ) {
-
-    showMessage(
-      "TIME",
-      "NOT AVAILABLE"
+  bool timeAvailable =
+    getCurrentTimeInfo(
+      timeinfo
     );
 
-    return;
+  char dateText[20] =
+    "--/-- ---";
+
+  char timeText[10] =
+    "--:--";
+
+  if (timeAvailable) {
+    strftime(
+      dateText,
+      sizeof(dateText),
+      "%m/%d %a",
+      &timeinfo
+    );
+
+    strftime(
+      timeText,
+      sizeof(timeText),
+      "%H:%M",
+      &timeinfo
+    );
   }
-
-  char dateText[20];
-  char timeText[10];
-
-  strftime(
-    dateText,
-    sizeof(dateText),
-    "%m/%d %a",
-    &timeinfo
-  );
-
-  strftime(
-    timeText,
-    sizeof(timeText),
-    "%H:%M",
-    &timeinfo
-  );
 
   display.clearDisplay();
 
@@ -1270,8 +1484,6 @@ void showHome() {
 
   display.setTextSize(1);
 
-
-  // 날짜
   display.setCursor(
     0,
     0
@@ -1281,8 +1493,6 @@ void showHome() {
     dateText
   );
 
-
-  // Wi-Fi 상태
   display.setCursor(
     98,
     0
@@ -1295,16 +1505,12 @@ void showHome() {
     display.print(
       "WiFi"
     );
-
   } else {
-
     display.print(
       "OFF"
     );
   }
 
-
-  // 현재 시간
   display.setTextSize(2);
 
   display.setCursor(
@@ -1316,8 +1522,6 @@ void showHome() {
     timeText
   );
 
-
-  // 구분선
   display.drawLine(
     0,
     32,
@@ -1326,12 +1530,10 @@ void showHome() {
     SSD1306_WHITE
   );
 
-
   int nextIndex =
     findNextEventIndex();
 
   display.setTextSize(1);
-
 
   if (
     nextIndex >= 0
@@ -1342,11 +1544,6 @@ void showHome() {
         nextIndex
       ];
 
-    int daysUntil =
-      getDaysUntil(
-        event
-      );
-
     display.setCursor(
       0,
       35
@@ -1356,11 +1553,22 @@ void showHome() {
       "NEXT "
     );
 
-    display.print(
-      getDDayText(
-        daysUntil
-      )
-    );
+    if (timeAvailable) {
+      display.print(
+        getDDayText(
+          getDaysUntil(
+            event
+          )
+        )
+      );
+
+    } else {
+      display.print(
+        getEventDateText(
+          event
+        )
+      );
+    }
 
     drawScrollingUtf8Text(
       display,
@@ -1401,29 +1609,22 @@ void showCalendar() {
 
   struct tm timeinfo;
 
-  if (
-    !getLocalTime(
-      &timeinfo
-    )
-  ) {
-
-    showMessage(
-      "TIME",
-      "NOT AVAILABLE"
+  bool timeAvailable =
+    getCurrentTimeInfo(
+      timeinfo
     );
 
-    return;
+  char dateText[10] =
+    "--/--";
+
+  if (timeAvailable) {
+    strftime(
+      dateText,
+      sizeof(dateText),
+      "%m/%d",
+      &timeinfo
+    );
   }
-
-  char dateText[10];
-
-  strftime(
-    dateText,
-    sizeof(dateText),
-    "%m/%d",
-    &timeinfo
-  );
-
 
   int pageCount =
     getCalendarPageCount();
@@ -1435,15 +1636,12 @@ void showCalendar() {
     calendarPage = 0;
   }
 
-
   display.clearDisplay();
 
   display.setTextColor(
     SSD1306_WHITE
   );
 
-
-  // 상단 제목
   drawUtf8Text(
     display,
     0,
@@ -1470,15 +1668,12 @@ void showCalendar() {
     SSD1306_WHITE
   );
 
-
-  // 일정 목록
   int firstOrder =
     calendarPage *
     CALENDAR_EVENTS_PER_PAGE;
 
   bool eventShown =
     false;
-
 
   for (
     int row = 0;
@@ -1505,23 +1700,14 @@ void showCalendar() {
     eventShown =
       true;
 
-
     ScheduleEvent& event =
       scheduleEvents[
         eventIndex
       ];
 
-
-    int daysUntil =
-      getDaysUntil(
-        event
-      );
-
-
     int y =
       21 +
       row * 18;
-
 
     display.setTextSize(1);
 
@@ -1530,12 +1716,22 @@ void showCalendar() {
       y + 4
     );
 
-    display.print(
-      getDDayText(
-        daysUntil
-      )
-    );
+    if (timeAvailable) {
+      display.print(
+        getDDayText(
+          getDaysUntil(
+            event
+          )
+        )
+      );
 
+    } else {
+      display.print(
+        getEventDateText(
+          event
+        )
+      );
+    }
 
     drawScrollingUtf8Text(
       display,
@@ -1545,7 +1741,6 @@ void showCalendar() {
       event.title
     );
   }
-
 
   if (
     !eventShown
@@ -1558,8 +1753,6 @@ void showCalendar() {
     );
   }
 
-
-  // 하단 페이지 표시
   display.setTextSize(1);
 
   display.setCursor(
@@ -1568,7 +1761,6 @@ void showCalendar() {
   );
 
   display.print("<");
-
 
   char pageText[12];
 
@@ -1580,7 +1772,6 @@ void showCalendar() {
     pageCount
   );
 
-
   display.setCursor(
     45,
     56
@@ -1590,14 +1781,12 @@ void showCalendar() {
     pageText
   );
 
-
   display.setCursor(
     122,
     56
   );
 
   display.print(">");
-
 
   display.display();
 }
@@ -1833,6 +2022,18 @@ void triggerNotification(
 // --------------------------------------------------
 
 void checkScheduleReminders() {
+
+  struct tm timeinfo;
+
+  // 현재 날짜를 신뢰할 수 없으면
+  // 날짜 기반 알림은 발생시키지 않는다.
+  if (
+    !getCurrentTimeInfo(
+      timeinfo
+    )
+  ) {
+    return;
+  }
 
   // 다른 알림이 표시 중이면
   // 새 알림으로 덮어쓰지 않는다.
@@ -2228,7 +2429,6 @@ void setup() {
     115200
   );
 
-
   pinMode(
     BUTTON_LEFT_PIN,
     INPUT_PULLUP
@@ -2244,12 +2444,10 @@ void setup() {
     INPUT_PULLUP
   );
 
-
   Wire.begin(
     21,
     22
   );
-
 
   if (
     !display.begin(
@@ -2257,29 +2455,20 @@ void setup() {
       SCREEN_ADDRESS
     )
   ) {
-
     Serial.println(
       "OLED init failed"
     );
 
-    while (
-      true
-    ) {
+    while (true) {
       delay(1000);
     }
   }
-
 
   showMessage(
     "BOOTING..."
   );
 
   delay(500);
-
-
-  connectWiFi();
-
-  syncTime();
 
 
   // -------------------------
@@ -2292,26 +2481,21 @@ void setup() {
       false
     );
 
-
   if (
     !preferencesReady
   ) {
-
     Serial.println(
       "Preferences init failed"
     );
 
   } else {
-
     Serial.println(
       "Preferences initialized"
     );
 
-
     if (
       RESET_REMINDER_STORAGE_ON_BOOT
     ) {
-
       preferences.clear();
 
       Serial.println(
@@ -2321,15 +2505,67 @@ void setup() {
   }
 
 
+  calendarCacheReady =
+    calendarCachePreferences.begin(
+      "calcache",
+      false
+    );
+
+  if (
+    !calendarCacheReady
+  ) {
+    Serial.println(
+      "Calendar cache init failed"
+    );
+
+  } else {
+    Serial.println(
+      "Calendar cache initialized"
+    );
+  }
+
+
   // -------------------------
-  // Google Calendar 초기 동기화
+  // 마지막 성공 일정 먼저 복구
   // -------------------------
 
-  syncCalendarEvents();
+  loadCalendarCache();
+
+
+  // -------------------------
+  // 네트워크 연결
+  // -------------------------
+
+  bool wifiConnected =
+    false;
+
+  if (
+    FORCE_OFFLINE_TEST_MODE
+  ) {
+    Serial.println(
+      "FORCE OFFLINE TEST MODE"
+    );
+
+  } else {
+    wifiConnected =
+      connectWiFi();
+  }
+
+  wifiWasConnected =
+    wifiConnected;
+
+  if (wifiConnected) {
+    syncTime();
+
+    // 최신 Google Calendar로 캐시/화면 갱신
+    syncCalendarEvents();
+  }
 
   lastCalendarSyncAt =
     millis();
 
+  lastWifiReconnectAt =
+    millis();
 
   currentScreen =
     SCREEN_HOME;
@@ -2345,10 +2581,61 @@ void loop() {
   ButtonEvent button =
     readButtonEvent();
 
-
   handleButton(
     button
   );
+
+
+  // --------------------------------------------------
+  // Wi-Fi 재연결
+  // --------------------------------------------------
+
+  bool wifiConnected =
+    WiFi.status() ==
+    WL_CONNECTED;
+
+  if (
+    !FORCE_OFFLINE_TEST_MODE &&
+    !wifiConnected &&
+    millis() -
+      lastWifiReconnectAt >=
+      WIFI_RECONNECT_INTERVAL_MS
+  ) {
+    lastWifiReconnectAt =
+      millis();
+
+    Serial.println(
+      "Wi-Fi reconnect attempt"
+    );
+
+    WiFi.disconnect();
+
+    WiFi.begin(
+      WIFI_SSID,
+      WIFI_PASSWORD
+    );
+  }
+
+
+  // 오프라인 상태에서 Wi-Fi가 돌아온 순간
+  if (
+    wifiConnected &&
+    !wifiWasConnected
+  ) {
+    Serial.println(
+      "Wi-Fi reconnected"
+    );
+
+    syncTime();
+
+    syncCalendarEvents();
+
+    lastCalendarSyncAt =
+      millis();
+  }
+
+  wifiWasConnected =
+    wifiConnected;
 
 
   // --------------------------------------------------
@@ -2364,16 +2651,13 @@ void loop() {
     lastCalendarSyncAt =
       millis();
 
-
     if (
       WiFi.status() ==
       WL_CONNECTED
     ) {
-
       syncCalendarEvents();
 
     } else {
-
       Serial.println(
         "Calendar sync skipped: Wi-Fi offline"
       );
@@ -2385,8 +2669,7 @@ void loop() {
   checkScheduleReminders();
 
 
-  // 타이머는 다른 화면에서도
-  // 계속 진행한다.
+  // 타이머는 다른 화면에서도 계속 진행
   if (
     timerRunning &&
     millis() -
@@ -2396,7 +2679,6 @@ void loop() {
 
     timerRunning =
       false;
-
 
     triggerNotification(
       "TIMER",
@@ -2410,37 +2692,26 @@ void loop() {
     currentScreen ==
     SCREEN_HOME
   ) {
-
     showHome();
 
-  }
-
-  else if (
+  } else if (
     currentScreen ==
     SCREEN_CALENDAR
   ) {
-
     showCalendar();
 
-  }
-
-  else if (
+  } else if (
     currentScreen ==
     SCREEN_TIMER
   ) {
-
     showTimer();
 
-  }
-
-  else if (
+  } else if (
     currentScreen ==
     SCREEN_NOTIFICATION
   ) {
-
     showNotification();
   }
-
 
   delay(20);
 }
