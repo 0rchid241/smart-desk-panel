@@ -77,6 +77,10 @@ const int SCHEDULE_EVENT_COUNT =
   sizeof(scheduleEvents) /
   sizeof(scheduleEvents[0]);
 
+const int CALENDAR_EVENTS_PER_PAGE = 2;
+
+int calendarPage = 0;
+
 
 // --------------------------------------------------
 // 알림 상태
@@ -393,12 +397,11 @@ int getDaysUntil(
 
 
 // --------------------------------------------------
-// 가장 가까운 미래 일정 찾기
+// 앞으로 남은 일정 개수
 // --------------------------------------------------
 
-int findNextEventIndex() {
-  int bestIndex = -1;
-  int bestDays = 99999;
+int countUpcomingEvents() {
+  int count = 0;
 
   for (
     int i = 0;
@@ -410,25 +413,138 @@ int findNextEventIndex() {
         scheduleEvents[i]
       );
 
-    // 지난 일정은 제외
     if (
-      daysUntil < 0
+      daysUntil >= 0
+    ) {
+      count++;
+    }
+  }
+
+  return count;
+}
+
+
+// --------------------------------------------------
+// n번째로 가까운 일정 찾기
+// --------------------------------------------------
+
+int findUpcomingEventIndexByOrder(
+  int targetOrder
+) {
+  for (
+    int candidateIndex = 0;
+    candidateIndex <
+      SCHEDULE_EVENT_COUNT;
+    candidateIndex++
+  ) {
+    int candidateDays =
+      getDaysUntil(
+        scheduleEvents[
+          candidateIndex
+        ]
+      );
+
+    if (
+      candidateDays < 0
     ) {
       continue;
     }
 
-    if (
-      daysUntil < bestDays
-    ) {
-      bestDays =
-        daysUntil;
+    int rank = 0;
 
-      bestIndex =
-        i;
+    for (
+      int otherIndex = 0;
+      otherIndex <
+        SCHEDULE_EVENT_COUNT;
+      otherIndex++
+    ) {
+      if (
+        otherIndex ==
+        candidateIndex
+      ) {
+        continue;
+      }
+
+      int otherDays =
+        getDaysUntil(
+          scheduleEvents[
+            otherIndex
+          ]
+        );
+
+      if (
+        otherDays < 0
+      ) {
+        continue;
+      }
+
+      // 더 가까운 일정이면
+      // candidate보다 앞에 위치
+      if (
+        otherDays <
+          candidateDays
+      ) {
+        rank++;
+      }
+
+      // 같은 날짜 일정은
+      // 배열 순서를 유지
+      else if (
+        otherDays ==
+          candidateDays &&
+        otherIndex <
+          candidateIndex
+      ) {
+        rank++;
+      }
+    }
+
+    if (
+      rank ==
+      targetOrder
+    ) {
+      return
+        candidateIndex;
     }
   }
 
-  return bestIndex;
+  return -1;
+}
+
+
+// --------------------------------------------------
+// 가장 가까운 일정
+// --------------------------------------------------
+
+int findNextEventIndex() {
+  return
+    findUpcomingEventIndexByOrder(
+      0
+    );
+}
+
+
+// --------------------------------------------------
+// CALENDAR 페이지 개수
+// --------------------------------------------------
+
+int getCalendarPageCount() {
+  int eventCount =
+    countUpcomingEvents();
+
+  if (
+    eventCount == 0
+  ) {
+    return 1;
+  }
+
+  return
+    (
+      eventCount +
+      CALENDAR_EVENTS_PER_PAGE -
+      1
+    ) /
+    CALENDAR_EVENTS_PER_PAGE;
 }
 
 
@@ -661,13 +777,29 @@ void showCalendar() {
     &timeinfo
   );
 
+  int pageCount =
+    getCalendarPageCount();
+
+  // 일정 개수가 변경되어
+  // 현재 페이지가 범위를 벗어난 경우
+  if (
+    calendarPage >=
+    pageCount
+  ) {
+    calendarPage = 0;
+  }
+
   display.clearDisplay();
 
   display.setTextColor(
     SSD1306_WHITE
   );
 
-  // 한글 제목
+
+  // -------------------------
+  // 상단
+  // -------------------------
+
   drawUtf8Text(
     display,
     0,
@@ -677,9 +809,8 @@ void showCalendar() {
 
   display.setTextSize(1);
 
-  // 오늘 날짜
   display.setCursor(
-    82,
+    84,
     4
   );
 
@@ -695,15 +826,44 @@ void showCalendar() {
     SSD1306_WHITE
   );
 
-  int nextIndex =
-    findNextEventIndex();
 
-  if (
-    nextIndex >= 0
+  // -------------------------
+  // 일정 목록
+  // -------------------------
+
+  int firstOrder =
+    calendarPage *
+    CALENDAR_EVENTS_PER_PAGE;
+
+  bool eventShown =
+    false;
+
+  for (
+    int row = 0;
+    row <
+      CALENDAR_EVENTS_PER_PAGE;
+    row++
   ) {
+    int order =
+      firstOrder +
+      row;
+
+    int eventIndex =
+      findUpcomingEventIndexByOrder(
+        order
+      );
+
+    if (
+      eventIndex < 0
+    ) {
+      continue;
+    }
+
+    eventShown = true;
+
     ScheduleEvent& event =
       scheduleEvents[
-        nextIndex
+        eventIndex
       ];
 
     int daysUntil =
@@ -711,10 +871,17 @@ void showCalendar() {
         event
       );
 
-    // D-2 09/16
+    int y =
+      21 +
+      row * 18;
+
+
+    // D-Day
+    display.setTextSize(1);
+
     display.setCursor(
       0,
-      23
+      y + 4
     );
 
     display.print(
@@ -723,35 +890,33 @@ void showCalendar() {
       )
     );
 
-    display.print(
-      "  "
-    );
 
-    display.print(
-      getEventDateText(
-        event
-      )
-    );
-
-    // 일정 이름
+    // 한글 일정 제목
     drawUtf8Text(
       display,
-      0,
-      34,
+      26,
+      y,
       event.title
     );
+  }
 
-  } else {
 
+  if (
+    !eventShown
+  ) {
     drawUtf8Text(
       display,
       0,
-      28,
+      25,
       "예정 없음"
     );
   }
 
-  // 화면 이동 힌트
+
+  // -------------------------
+  // 하단 페이지 표시
+  // -------------------------
+
   display.setTextSize(1);
 
   display.setCursor(
@@ -760,6 +925,25 @@ void showCalendar() {
   );
 
   display.print("<");
+
+  char pageText[12];
+
+  snprintf(
+    pageText,
+    sizeof(pageText),
+    "%d/%d OK",
+    calendarPage + 1,
+    pageCount
+  );
+
+  display.setCursor(
+    45,
+    56
+  );
+
+  display.print(
+    pageText
+  );
 
   display.setCursor(
     122,
@@ -1192,6 +1376,29 @@ void handleButton(
       Serial.println(
         "Notification dismissed"
       );
+    }
+
+    return;
+  }
+
+  // CALENDAR에서 OK → 다음 일정 페이지
+  if (
+    currentScreen ==
+      SCREEN_CALENDAR &&
+    button ==
+      BUTTON_OK
+  ) {
+    int pageCount =
+      getCalendarPageCount();
+
+    if (
+      pageCount > 1
+    ) {
+      calendarPage =
+        (
+          calendarPage + 1
+        ) %
+        pageCount;
     }
 
     return;
