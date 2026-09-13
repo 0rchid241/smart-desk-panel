@@ -11,7 +11,9 @@
 #define OLED_RESET -1
 #define SCREEN_ADDRESS 0x3C
 
-#define BUTTON_PIN 25
+#define BUTTON_LEFT_PIN 25
+#define BUTTON_OK_PIN 26
+#define BUTTON_RIGHT_PIN 27
 
 Adafruit_SSD1306 display(
   SCREEN_WIDTH,
@@ -35,6 +37,50 @@ ScreenMode currentScreen = SCREEN_HOME;
 
 
 // --------------------------------------------------
+// 버튼 이벤트
+// --------------------------------------------------
+
+enum ButtonEvent {
+  BUTTON_NONE,
+  BUTTON_LEFT,
+  BUTTON_OK,
+  BUTTON_RIGHT
+};
+
+const int BUTTON_PINS[3] = {
+  BUTTON_LEFT_PIN,
+  BUTTON_OK_PIN,
+  BUTTON_RIGHT_PIN
+};
+
+const ButtonEvent BUTTON_EVENTS[3] = {
+  BUTTON_LEFT,
+  BUTTON_OK,
+  BUTTON_RIGHT
+};
+
+bool lastButtonReadings[3] = {
+  HIGH,
+  HIGH,
+  HIGH
+};
+
+bool stableButtonStates[3] = {
+  HIGH,
+  HIGH,
+  HIGH
+};
+
+unsigned long lastButtonChangeAt[3] = {
+  0,
+  0,
+  0
+};
+
+const unsigned long BUTTON_DEBOUNCE_MS = 30;
+
+
+// --------------------------------------------------
 // 타이머 상태
 // --------------------------------------------------
 
@@ -42,27 +88,18 @@ bool timerRunning = false;
 
 unsigned long timerStartedAt = 0;
 
-// 테스트용 10초
+// 아직 테스트용 10초
 const unsigned long TIMER_DURATION_MS = 10000;
 
 
 // --------------------------------------------------
-// 버튼 디바운싱
+// 일반 메시지
 // --------------------------------------------------
 
-bool lastButtonReading = HIGH;
-bool stableButtonState = HIGH;
-
-unsigned long lastButtonChangeAt = 0;
-
-const unsigned long BUTTON_DEBOUNCE_MS = 30;
-
-
-// --------------------------------------------------
-// 일반 메시지 화면
-// --------------------------------------------------
-
-void showMessage(const char* line1, const char* line2 = "") {
+void showMessage(
+  const char* line1,
+  const char* line2 = ""
+) {
   display.clearDisplay();
 
   display.setTextSize(1);
@@ -82,15 +119,20 @@ void showMessage(const char* line1, const char* line2 = "") {
 
 
 // --------------------------------------------------
-// Wi-Fi 연결
+// Wi-Fi
 // --------------------------------------------------
 
 void connectWiFi() {
   showMessage("Wi-Fi", "Connecting...");
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(
+    WIFI_SSID,
+    WIFI_PASSWORD
+  );
 
-  while (WiFi.status() != WL_CONNECTED) {
+  while (
+    WiFi.status() != WL_CONNECTED
+  ) {
     delay(500);
     Serial.print(".");
   }
@@ -99,20 +141,25 @@ void connectWiFi() {
   Serial.println("Wi-Fi connected");
   Serial.println(WiFi.localIP());
 
-  showMessage("Wi-Fi", "CONNECTED");
+  showMessage(
+    "Wi-Fi",
+    "CONNECTED"
+  );
 
   delay(1000);
 }
 
 
 // --------------------------------------------------
-// NTP 시간 동기화
+// NTP 시간
 // --------------------------------------------------
 
 void syncTime() {
-  showMessage("TIME", "Syncing...");
+  showMessage(
+    "TIME",
+    "Syncing..."
+  );
 
-  // 대한민국 UTC+9
   configTime(
     9 * 3600,
     0,
@@ -122,27 +169,42 @@ void syncTime() {
 
   struct tm timeinfo;
 
-  if (!getLocalTime(&timeinfo, 10000)) {
-    Serial.println("Time sync failed");
+  if (
+    !getLocalTime(
+      &timeinfo,
+      10000
+    )
+  ) {
+    Serial.println(
+      "Time sync failed"
+    );
 
-    showMessage("TIME", "SYNC FAILED");
+    showMessage(
+      "TIME",
+      "SYNC FAILED"
+    );
 
     return;
   }
 
-  Serial.println("Time sync success");
+  Serial.println(
+    "Time sync success"
+  );
 }
 
 
 // --------------------------------------------------
-// HOME 화면
+// HOME
 // --------------------------------------------------
 
 void showHome() {
   struct tm timeinfo;
 
   if (!getLocalTime(&timeinfo)) {
-    showMessage("TIME", "NOT AVAILABLE");
+    showMessage(
+      "TIME",
+      "NOT AVAILABLE"
+    );
 
     return;
   }
@@ -165,31 +227,31 @@ void showHome() {
   );
 
   display.clearDisplay();
+  display.setTextColor(
+    SSD1306_WHITE
+  );
 
-  display.setTextColor(SSD1306_WHITE);
-
-  // 날짜
   display.setTextSize(1);
 
   display.setCursor(0, 0);
   display.print(dateText);
 
-  // Wi-Fi 상태
   display.setCursor(98, 0);
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (
+    WiFi.status() ==
+    WL_CONNECTED
+  ) {
     display.print("WiFi");
   } else {
     display.print("OFF");
   }
 
-  // 현재 시간
   display.setTextSize(2);
 
   display.setCursor(34, 13);
   display.print(timeText);
 
-  // 구분선
   display.drawLine(
     0,
     32,
@@ -198,14 +260,17 @@ void showHome() {
     SSD1306_WHITE
   );
 
-  // 다음 일정
   display.setTextSize(1);
 
   display.setCursor(0, 37);
   display.println("NEXT");
 
-  display.setCursor(0, 51);
+  display.setCursor(0, 49);
   display.println("No schedule");
+
+  // 현재 좌우 버튼으로 TIMER 이동 가능
+  display.setCursor(74, 56);
+  display.print("<> TIMER");
 
   display.display();
 }
@@ -220,39 +285,55 @@ void startTimer() {
 
   timerRunning = true;
 
-  currentScreen = SCREEN_TIMER;
-
-  Serial.println("Timer started");
+  Serial.println(
+    "Timer started"
+  );
 }
 
 
 // --------------------------------------------------
-// 타이머 화면
+// 타이머 남은 시간
 // --------------------------------------------------
 
-void showTimer() {
+unsigned long getTimerRemainingSeconds() {
+
+  // 아직 시작하지 않았다면
+  // 전체 설정 시간을 보여준다.
+  if (!timerRunning) {
+    return
+      TIMER_DURATION_MS / 1000;
+  }
+
   unsigned long elapsed =
     millis() - timerStartedAt;
 
-  unsigned long remainingMs;
-
-  if (elapsed >= TIMER_DURATION_MS) {
-    remainingMs = 0;
-  } else {
-    remainingMs =
-      TIMER_DURATION_MS - elapsed;
+  if (
+    elapsed >= TIMER_DURATION_MS
+  ) {
+    return 0;
   }
 
-  // 999를 더해서 초 표시가 너무 빨리 줄어드는 것을 방지
-  unsigned long remainingSeconds =
+  unsigned long remainingMs =
+    TIMER_DURATION_MS - elapsed;
+
+  return
     (remainingMs + 999) / 1000;
+}
+
+
+// --------------------------------------------------
+// TIMER 화면
+// --------------------------------------------------
+
+void showTimer() {
+  unsigned long remainingSeconds =
+    getTimerRemainingSeconds();
 
   unsigned int minutes =
     remainingSeconds / 60;
 
   unsigned int seconds =
     remainingSeconds % 60;
-
 
   char timerText[10];
 
@@ -264,10 +345,10 @@ void showTimer() {
     seconds
   );
 
-
   display.clearDisplay();
-
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(
+    SSD1306_WHITE
+  );
 
   display.setTextSize(1);
 
@@ -284,31 +365,46 @@ void showTimer() {
 
   display.setTextSize(2);
 
-  display.setCursor(34, 23);
+  display.setCursor(34, 22);
   display.println(timerText);
 
   display.setTextSize(1);
 
-  display.setCursor(29, 51);
-  display.println("FOCUS");
+  if (timerRunning) {
+    display.setCursor(38, 44);
+    display.println("RUNNING");
+
+    display.setCursor(0, 56);
+    display.print("< HOME");
+  } else {
+    display.setCursor(34, 44);
+    display.println("OK START");
+
+    display.setCursor(0, 56);
+    display.print("< HOME");
+  }
 
   display.display();
 }
 
 
 // --------------------------------------------------
-// 알림 화면
+// 알림
 // --------------------------------------------------
 
 void showNotification() {
   display.clearDisplay();
 
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(
+    SSD1306_WHITE
+  );
 
   display.setTextSize(1);
 
   display.setCursor(0, 0);
-  display.println("! NOTIFICATION");
+  display.println(
+    "! NOTIFICATION"
+  );
 
   display.drawLine(
     0,
@@ -319,59 +415,184 @@ void showNotification() {
   );
 
   display.setCursor(0, 22);
-  display.println("TIMER FINISHED");
+  display.println(
+    "TIMER FINISHED"
+  );
 
   display.setCursor(0, 40);
-  display.println("Press button");
+  display.println(
+    "Press OK"
+  );
 
   display.setCursor(0, 52);
-  display.println("to dismiss");
+  display.println(
+    "to dismiss"
+  );
 
   display.display();
 }
 
 
 // --------------------------------------------------
-// 버튼 1회 입력 감지
+// 3버튼 입력
 // --------------------------------------------------
 
-bool buttonWasPressed() {
-  bool reading =
-    digitalRead(BUTTON_PIN);
+ButtonEvent readButtonEvent() {
 
-  if (reading != lastButtonReading) {
-    lastButtonChangeAt = millis();
+  for (int i = 0; i < 3; i++) {
 
-    lastButtonReading = reading;
-  }
+    bool reading =
+      digitalRead(
+        BUTTON_PINS[i]
+      );
 
-  if (
-    millis() - lastButtonChangeAt >
-    BUTTON_DEBOUNCE_MS
-  ) {
+    if (
+      reading !=
+      lastButtonReadings[i]
+    ) {
+      lastButtonChangeAt[i] =
+        millis();
 
-    if (reading != stableButtonState) {
-      stableButtonState = reading;
+      lastButtonReadings[i] =
+        reading;
+    }
 
-      if (stableButtonState == LOW) {
-        return true;
+    if (
+      millis() -
+      lastButtonChangeAt[i]
+      >
+      BUTTON_DEBOUNCE_MS
+    ) {
+
+      if (
+        reading !=
+        stableButtonStates[i]
+      ) {
+
+        stableButtonStates[i] =
+          reading;
+
+        if (
+          stableButtonStates[i]
+          == LOW
+        ) {
+          return
+            BUTTON_EVENTS[i];
+        }
       }
     }
   }
 
-  return false;
+  return BUTTON_NONE;
 }
 
 
 // --------------------------------------------------
-// 초기 설정
+// 버튼 처리
+// --------------------------------------------------
+
+void handleButton(
+  ButtonEvent button
+) {
+
+  if (button == BUTTON_NONE) {
+    return;
+  }
+
+
+  // 알림이 떠 있을 때는
+  // OK만 동작
+  if (
+    currentScreen ==
+    SCREEN_NOTIFICATION
+  ) {
+
+    if (button == BUTTON_OK) {
+      currentScreen =
+        SCREEN_HOME;
+
+      Serial.println(
+        "Notification dismissed"
+      );
+    }
+
+    return;
+  }
+
+
+  // HOME
+  if (
+    currentScreen ==
+    SCREEN_HOME
+  ) {
+
+    if (
+      button == BUTTON_LEFT ||
+      button == BUTTON_RIGHT
+    ) {
+      currentScreen =
+        SCREEN_TIMER;
+
+      Serial.println(
+        "Screen: TIMER"
+      );
+    }
+
+    return;
+  }
+
+
+  // TIMER
+  if (
+    currentScreen ==
+    SCREEN_TIMER
+  ) {
+
+    if (
+      button == BUTTON_LEFT ||
+      button == BUTTON_RIGHT
+    ) {
+      currentScreen =
+        SCREEN_HOME;
+
+      Serial.println(
+        "Screen: HOME"
+      );
+
+      return;
+    }
+
+    if (
+      button == BUTTON_OK &&
+      !timerRunning
+    ) {
+      startTimer();
+
+      return;
+    }
+  }
+}
+
+
+// --------------------------------------------------
+// setup
 // --------------------------------------------------
 
 void setup() {
   Serial.begin(115200);
 
   pinMode(
-    BUTTON_PIN,
+    BUTTON_LEFT_PIN,
+    INPUT_PULLUP
+  );
+
+  pinMode(
+    BUTTON_OK_PIN,
+    INPUT_PULLUP
+  );
+
+  pinMode(
+    BUTTON_RIGHT_PIN,
     INPUT_PULLUP
   );
 
@@ -384,7 +605,9 @@ void setup() {
     )
   ) {
 
-    Serial.println("OLED init failed");
+    Serial.println(
+      "OLED init failed"
+    );
 
     while (true) {
     }
@@ -395,49 +618,27 @@ void setup() {
   delay(500);
 
   connectWiFi();
-
   syncTime();
 
-  currentScreen = SCREEN_HOME;
+  currentScreen =
+    SCREEN_HOME;
 }
 
 
 // --------------------------------------------------
-// 메인 반복
+// loop
 // --------------------------------------------------
 
 void loop() {
 
-  // --------------------------------
-  // 버튼 입력
-  // --------------------------------
+  ButtonEvent button =
+    readButtonEvent();
 
-  if (buttonWasPressed()) {
-
-    // HOME에서 버튼 → 타이머 시작
-    if (currentScreen == SCREEN_HOME) {
-      startTimer();
-    }
-
-    // 알림에서 버튼 → HOME 복귀
-    else if (
-      currentScreen ==
-      SCREEN_NOTIFICATION
-    ) {
-
-      currentScreen = SCREEN_HOME;
-
-      Serial.println(
-        "Notification dismissed"
-      );
-    }
-  }
+  handleButton(button);
 
 
-  // --------------------------------
-  // 타이머 종료 확인
-  // --------------------------------
-
+  // 타이머는 현재 보고 있는 화면과
+  // 상관없이 계속 진행한다.
   if (
     timerRunning &&
     millis() - timerStartedAt >=
@@ -449,20 +650,22 @@ void loop() {
     currentScreen =
       SCREEN_NOTIFICATION;
 
-    Serial.println("Timer finished");
+    Serial.println(
+      "Timer finished"
+    );
   }
 
 
-  // --------------------------------
-  // 화면 출력
-  // --------------------------------
-
-  if (currentScreen == SCREEN_HOME) {
+  if (
+    currentScreen ==
+    SCREEN_HOME
+  ) {
 
     showHome();
 
   } else if (
-    currentScreen == SCREEN_TIMER
+    currentScreen ==
+    SCREEN_TIMER
   ) {
 
     showTimer();
@@ -476,5 +679,5 @@ void loop() {
   }
 
 
-  delay(50);
+  delay(20);
 }
