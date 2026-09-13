@@ -78,7 +78,7 @@ void syncTime() {
   Serial.println("Time sync success");
 }
 
-void showClock() {
+void showHome() {
   struct tm timeinfo;
 
   if (!getLocalTime(&timeinfo)) {
@@ -87,24 +87,43 @@ void showClock() {
   }
 
   char dateText[20];
-  char timeText[20];
+  char timeText[10];
 
-  strftime(dateText, sizeof(dateText), "%Y-%m-%d", &timeinfo);
-  strftime(timeText, sizeof(timeText), "%H:%M:%S", &timeinfo);
+  strftime(dateText, sizeof(dateText), "%m/%d %a", &timeinfo);
+  strftime(timeText, sizeof(timeText), "%H:%M", &timeinfo);
 
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
 
+  // 날짜
   display.setTextSize(1);
   display.setCursor(0, 0);
-  display.println("SMART DESK");
+  display.print(dateText);
 
-  display.setCursor(0, 20);
-  display.println(dateText);
+  // Wi-Fi 상태
+  display.setCursor(98, 0);
 
+  if (WiFi.status() == WL_CONNECTED) {
+    display.print("WiFi");
+  } else {
+    display.print("OFF");
+  }
+
+  // 현재 시간
   display.setTextSize(2);
-  display.setCursor(0, 38);
-  display.println(timeText);
+  display.setCursor(34, 13);
+  display.print(timeText);
+
+  // 구분선
+  display.drawLine(0, 32, 127, 32, SSD1306_WHITE);
+
+  // 다음 일정 영역
+  display.setTextSize(1);
+  display.setCursor(0, 37);
+  display.println("NEXT");
+
+  display.setCursor(0, 51);
+  display.println("No schedule");
 
   display.display();
 }
@@ -131,6 +150,6 @@ void setup() {
 }
 
 void loop() {
-  showClock();
+  showHome();
   delay(1000);
 }
