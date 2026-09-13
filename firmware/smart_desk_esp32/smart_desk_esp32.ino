@@ -107,6 +107,17 @@ String getEventDateText(
   const ScheduleEvent& event
 );
 
+bool parseCalendarDate(
+  const String& dateText,
+  int& year,
+  int& month,
+  int& day
+);
+
+bool fetchCalendarEvents();
+
+bool syncCalendarEvents();
+
 ButtonEvent readButtonEvent();
 
 void moveMainScreen(
@@ -225,6 +236,17 @@ unsigned long timerStartedAt =
 // 아직 테스트용 10초
 const unsigned long TIMER_DURATION_MS =
   10000;
+
+
+// --------------------------------------------------
+// Google Calendar 자동 동기화
+// --------------------------------------------------
+
+const unsigned long CALENDAR_SYNC_INTERVAL_MS =
+  15UL * 60UL * 1000UL;
+
+unsigned long lastCalendarSyncAt =
+  0;
 
 
 // --------------------------------------------------
@@ -748,6 +770,50 @@ bool fetchCalendarEvents() {
     " events"
   );
 
+
+  return true;
+}
+
+
+// --------------------------------------------------
+// Google Calendar 동기화
+// --------------------------------------------------
+
+bool syncCalendarEvents() {
+
+  Serial.println();
+  Serial.println(
+    "Calendar sync start"
+  );
+
+
+  bool success =
+    fetchCalendarEvents();
+
+
+  if (!success) {
+
+    Serial.println(
+      "Calendar sync failed"
+    );
+
+    return false;
+  }
+
+
+  // fetchCalendarEvents()가 새 일정 객체를 만들면서
+  // reminderFlags를 0으로 초기화하므로
+  // 기존 NVS 알림 기록을 다시 불러온다.
+  if (
+    preferencesReady
+  ) {
+    loadReminderFlags();
+  }
+
+
+  Serial.println(
+    "Calendar sync success"
+  );
 
   return true;
 }
@@ -2216,25 +2282,10 @@ void setup() {
   syncTime();
 
 
-  // 실제 Google Calendar 일정 가져오기
-  bool calendarLoaded =
-    fetchCalendarEvents();
+  // -------------------------
+  // NVS 준비
+  // -------------------------
 
-
-  if (
-    calendarLoaded
-  ) {
-    Serial.println(
-      "Calendar sync success"
-    );
-  } else {
-    Serial.println(
-      "Calendar sync failed"
-    );
-  }
-
-
-  // NVS 열기
   preferencesReady =
     preferences.begin(
       "schedule",
@@ -2256,18 +2307,28 @@ void setup() {
       "Preferences initialized"
     );
 
+
     if (
-    RESET_REMINDER_STORAGE_ON_BOOT
+      RESET_REMINDER_STORAGE_ON_BOOT
     ) {
+
       preferences.clear();
 
       Serial.println(
         "Reminder storage cleared"
       );
     }
-
-    loadReminderFlags();
   }
+
+
+  // -------------------------
+  // Google Calendar 초기 동기화
+  // -------------------------
+
+  syncCalendarEvents();
+
+  lastCalendarSyncAt =
+    millis();
 
 
   currentScreen =
@@ -2288,6 +2349,36 @@ void loop() {
   handleButton(
     button
   );
+
+
+  // --------------------------------------------------
+  // Google Calendar 주기적 동기화
+  // --------------------------------------------------
+
+  if (
+    millis() -
+      lastCalendarSyncAt >=
+      CALENDAR_SYNC_INTERVAL_MS
+  ) {
+
+    lastCalendarSyncAt =
+      millis();
+
+
+    if (
+      WiFi.status() ==
+      WL_CONNECTED
+    ) {
+
+      syncCalendarEvents();
+
+    } else {
+
+      Serial.println(
+        "Calendar sync skipped: Wi-Fi offline"
+      );
+    }
+  }
 
 
   // 일정 D-3 / D-1 / D-DAY 검사
