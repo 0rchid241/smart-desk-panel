@@ -47,6 +47,8 @@ struct ScheduleEvent {
   int month;
   int day;
   String title;
+
+  uint8_t reminderFlags;
 };
 
 
@@ -56,20 +58,23 @@ ScheduleEvent scheduleEvents[] = {
   {
     2026,
     9,
-    16,
-    "머신러닝 과제"
+    15,
+    "머신러닝 과제",
+    0
   },
   {
     2026,
     9,
     18,
-    "캡스톤 발표"
+    "캡스톤 발표",
+    0
   },
   {
     2026,
     9,
     25,
-    "졸업작품 점검"
+    "졸업작품 점검",
+    0
   }
 };
 
@@ -80,6 +85,15 @@ const int SCHEDULE_EVENT_COUNT =
 const int CALENDAR_EVENTS_PER_PAGE = 2;
 
 int calendarPage = 0;
+
+const uint8_t REMINDER_D3 =
+  1 << 0;
+
+const uint8_t REMINDER_D1 =
+  1 << 1;
+
+const uint8_t REMINDER_DDAY =
+  1 << 2;
 
 
 // --------------------------------------------------
@@ -564,6 +578,31 @@ String getDDayText(
   return
     "D-" +
     String(daysUntil);
+}
+
+
+uint8_t getReminderFlag(
+  int daysUntil
+) {
+  if (
+    daysUntil == 3
+  ) {
+    return REMINDER_D3;
+  }
+
+  if (
+    daysUntil == 1
+  ) {
+    return REMINDER_D1;
+  }
+
+  if (
+    daysUntil == 0
+  ) {
+    return REMINDER_DDAY;
+  }
+
+  return 0;
 }
 
 
@@ -1161,6 +1200,78 @@ void triggerNotification(
 }
 
 
+void checkScheduleReminders() {
+
+  // 이미 다른 알림이 떠 있다면
+  // 덮어쓰지 않는다.
+  if (
+    currentScreen ==
+    SCREEN_NOTIFICATION
+  ) {
+    return;
+  }
+
+  for (
+    int i = 0;
+    i < SCHEDULE_EVENT_COUNT;
+    i++
+  ) {
+
+    ScheduleEvent& event =
+      scheduleEvents[i];
+
+    int daysUntil =
+      getDaysUntil(
+        event
+      );
+
+    uint8_t reminderFlag =
+      getReminderFlag(
+        daysUntil
+      );
+
+    // 오늘은 알림 대상 날짜가 아님
+    if (
+      reminderFlag == 0
+    ) {
+      continue;
+    }
+
+    // 이미 이 단계의 알림을 보여줌
+    if (
+      event.reminderFlags &
+      reminderFlag
+    ) {
+      continue;
+    }
+
+
+    // 먼저 완료 처리
+    event.reminderFlags |=
+      reminderFlag;
+
+
+    String message =
+      getDDayText(
+        daysUntil
+      );
+
+    message += " ";
+    message += event.title;
+
+
+    triggerNotification(
+      "일정 알림",
+      message
+    );
+
+    // 동시에 여러 일정이 있어도
+    // 한 번에 하나씩만 표시
+    return;
+  }
+}
+
+
 // --------------------------------------------------
 // 알림 화면
 // --------------------------------------------------
@@ -1172,50 +1283,43 @@ void showNotification() {
     SSD1306_WHITE
   );
 
-  display.setTextSize(1);
 
-  display.setCursor(
+  // 상단
+  drawUtf8Text(
+    display,
     0,
-    0
-  );
-
-  display.println(
-    "! NOTIFICATION"
+    0,
+    notificationTitle
   );
 
   display.drawLine(
     0,
-    11,
+    18,
     127,
-    11,
+    18,
     SSD1306_WHITE
   );
 
-  display.setCursor(
+
+  // 알림 내용
+  drawUtf8Text(
+    display,
     0,
-    19
-  );
-
-  display.println(
-    notificationTitle
-  );
-
-  display.setCursor(
-    0,
-    31
-  );
-
-  display.println(
+    22,
     notificationMessage
   );
 
+
+  // 하단 안내
+  display.setTextSize(1);
+
   display.setCursor(
-    0,
-    48
+    30,
+    56
   );
 
-  display.println(
-    "OK to dismiss"
+  display.print(
+    "OK DISMISS"
   );
 
   display.display();
@@ -1506,6 +1610,8 @@ void loop() {
   handleButton(
     button
   );
+
+  checkScheduleReminders();
 
 
   // 타이머는 다른 화면에서도 계속 진행
