@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "wifi_secrets.h"
+#include "hangul_renderer.h"
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -56,7 +57,7 @@ ScheduleEvent nextEvent = {
 };
 
 
-// 테스트용 설정
+// 아직 테스트용 설정
 const unsigned long TEST_EVENT_AFTER_SECONDS = 45;
 const unsigned long TEST_REMINDER_BEFORE_SECONDS = 15;
 
@@ -138,7 +139,9 @@ void showMessage(
   display.clearDisplay();
 
   display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(
+    SSD1306_WHITE
+  );
 
   display.setCursor(0, 0);
   display.println("SMART DESK");
@@ -158,7 +161,10 @@ void showMessage(
 // --------------------------------------------------
 
 void connectWiFi() {
-  showMessage("Wi-Fi", "Connecting...");
+  showMessage(
+    "Wi-Fi",
+    "Connecting..."
+  );
 
   WiFi.begin(
     WIFI_SSID,
@@ -166,15 +172,20 @@ void connectWiFi() {
   );
 
   while (
-    WiFi.status() != WL_CONNECTED
+    WiFi.status() !=
+    WL_CONNECTED
   ) {
     delay(500);
     Serial.print(".");
   }
 
   Serial.println();
-  Serial.println("Wi-Fi connected");
-  Serial.println(WiFi.localIP());
+  Serial.println(
+    "Wi-Fi connected"
+  );
+  Serial.println(
+    WiFi.localIP()
+  );
 
   showMessage(
     "Wi-Fi",
@@ -225,6 +236,36 @@ void syncTime() {
   Serial.println(
     "Time sync success"
   );
+}
+
+
+// --------------------------------------------------
+// 일정 시간을 문자열로 만드는 함수
+// --------------------------------------------------
+
+String getEventTimeText() {
+
+  if (!nextEvent.active) {
+    return "--:--";
+  }
+
+  struct tm eventTimeInfo;
+
+  localtime_r(
+    &nextEvent.startTime,
+    &eventTimeInfo
+  );
+
+  char buffer[6];
+
+  strftime(
+    buffer,
+    sizeof(buffer),
+    "%H:%M",
+    &eventTimeInfo
+  );
+
+  return String(buffer);
 }
 
 
@@ -321,7 +362,6 @@ void showHome() {
     );
   }
 
-  // 현재 좌우 버튼으로 TIMER, CALENDAR 이동 가능
   display.setCursor(0, 56);
   display.print("< TIMER");
 
@@ -329,51 +369,6 @@ void showHome() {
   display.print("CAL >");
 
   display.display();
-}
-
-
-// --------------------------------------------------
-// 타이머 시작
-// --------------------------------------------------
-
-void startTimer() {
-  timerStartedAt = millis();
-
-  timerRunning = true;
-
-  Serial.println(
-    "Timer started"
-  );
-}
-
-
-// --------------------------------------------------
-// 타이머 남은 시간
-// --------------------------------------------------
-
-unsigned long getTimerRemainingSeconds() {
-
-  // 아직 시작하지 않았다면
-  // 전체 설정 시간을 보여준다.
-  if (!timerRunning) {
-    return
-      TIMER_DURATION_MS / 1000;
-  }
-
-  unsigned long elapsed =
-    millis() - timerStartedAt;
-
-  if (
-    elapsed >= TIMER_DURATION_MS
-  ) {
-    return 0;
-  }
-
-  unsigned long remainingMs =
-    TIMER_DURATION_MS - elapsed;
-
-  return
-    (remainingMs + 999) / 1000;
 }
 
 
@@ -457,6 +452,51 @@ void showCalendar() {
 
 
 // --------------------------------------------------
+// 타이머 시작
+// --------------------------------------------------
+
+void startTimer() {
+  timerStartedAt =
+    millis();
+
+  timerRunning = true;
+
+  Serial.println(
+    "Timer started"
+  );
+}
+
+
+// --------------------------------------------------
+// 타이머 남은 시간
+// --------------------------------------------------
+
+unsigned long getTimerRemainingSeconds() {
+
+  if (!timerRunning) {
+    return
+      TIMER_DURATION_MS / 1000;
+  }
+
+  unsigned long elapsed =
+    millis() - timerStartedAt;
+
+  if (
+    elapsed >=
+    TIMER_DURATION_MS
+  ) {
+    return 0;
+  }
+
+  unsigned long remainingMs =
+    TIMER_DURATION_MS - elapsed;
+
+  return
+    (remainingMs + 999) / 1000;
+}
+
+
+// --------------------------------------------------
 // TIMER 화면
 // --------------------------------------------------
 
@@ -506,31 +546,66 @@ void showTimer() {
   display.setTextSize(1);
 
   if (timerRunning) {
+
     display.setCursor(38, 44);
     display.println("RUNNING");
 
-    display.setCursor(0, 56);
-    display.print("< CAL");
-
-    display.setCursor(86, 56);
-    display.print("HOME >");
   } else {
+
     display.setCursor(34, 44);
     display.println("OK START");
-
-    display.setCursor(0, 56);
-    display.print("< CAL");
-
-    display.setCursor(86, 56);
-    display.print("HOME >");
   }
+
+  display.setCursor(0, 56);
+  display.print("< CAL");
+
+  display.setCursor(86, 56);
+  display.print("HOME >");
 
   display.display();
 }
 
 
 // --------------------------------------------------
-// 일정 알림 검사 함수
+// 범용 알림 발생
+// --------------------------------------------------
+
+void triggerNotification(
+  const String& title,
+  const String& message
+) {
+
+  if (
+    currentScreen !=
+    SCREEN_NOTIFICATION
+  ) {
+    screenBeforeNotification =
+      currentScreen;
+  }
+
+  notificationTitle =
+    title;
+
+  notificationMessage =
+    message;
+
+  currentScreen =
+    SCREEN_NOTIFICATION;
+
+  Serial.print(
+    "Notification: "
+  );
+
+  Serial.print(title);
+
+  Serial.print(" / ");
+
+  Serial.println(message);
+}
+
+
+// --------------------------------------------------
+// 일정 알림 검사
 // --------------------------------------------------
 
 void checkScheduleReminder() {
@@ -542,7 +617,8 @@ void checkScheduleReminder() {
     return;
   }
 
-  time_t now = time(nullptr);
+  time_t now =
+    time(nullptr);
 
   time_t reminderTime =
     nextEvent.startTime -
@@ -566,7 +642,7 @@ void checkScheduleReminder() {
 
 
 // --------------------------------------------------
-// 알림
+// 알림 화면
 // --------------------------------------------------
 
 void showNotification() {
@@ -610,41 +686,20 @@ void showNotification() {
 }
 
 
-void triggerNotification(
-  const String& title,
-  const String& message
-) {
-
-  // 알림이 뜨기 직전에 보고 있던 화면 기억
-  if (
-    currentScreen !=
-    SCREEN_NOTIFICATION
-  ) {
-    screenBeforeNotification =
-      currentScreen;
-  }
-
-  notificationTitle = title;
-  notificationMessage = message;
-
-  currentScreen =
-    SCREEN_NOTIFICATION;
-
-  Serial.print("Notification: ");
-  Serial.print(title);
-  Serial.print(" / ");
-  Serial.println(message);
-}
-
+// --------------------------------------------------
+// 테스트 일정 생성
+// --------------------------------------------------
 
 void createTestSchedule() {
 
-  time_t now = time(nullptr);
+  time_t now =
+    time(nullptr);
 
   nextEvent.active = true;
 
   nextEvent.startTime =
-    now + TEST_EVENT_AFTER_SECONDS;
+    now +
+    TEST_EVENT_AFTER_SECONDS;
 
   nextEvent.title =
     "Test event";
@@ -655,36 +710,6 @@ void createTestSchedule() {
   Serial.println(
     "Test schedule created"
   );
-}
-
-
-// --------------------------------------------------
-// 일정 시간을 문자열로 만드는 함수
-// --------------------------------------------------
-
-String getEventTimeText() {
-
-  if (!nextEvent.active) {
-    return "--:--";
-  }
-
-  struct tm eventTimeInfo;
-
-  localtime_r(
-    &nextEvent.startTime,
-    &eventTimeInfo
-  );
-
-  char buffer[6];
-
-  strftime(
-    buffer,
-    sizeof(buffer),
-    "%H:%M",
-    &eventTimeInfo
-  );
-
-  return String(buffer);
 }
 
 
@@ -705,6 +730,7 @@ ButtonEvent readButtonEvent() {
       reading !=
       lastButtonReadings[i]
     ) {
+
       lastButtonChangeAt[i] =
         millis();
 
@@ -728,8 +754,8 @@ ButtonEvent readButtonEvent() {
           reading;
 
         if (
-          stableButtonStates[i]
-          == LOW
+          stableButtonStates[i] ==
+          LOW
         ) {
           return
             BUTTON_EVENTS[i];
@@ -743,43 +769,72 @@ ButtonEvent readButtonEvent() {
 
 
 // --------------------------------------------------
-// 화면 이동 함수
+// 화면 이동
 // --------------------------------------------------
 
-void moveMainScreen(ButtonEvent button) {
+void moveMainScreen(
+  ButtonEvent button
+) {
 
-  if (button == BUTTON_RIGHT) {
+  if (
+    button ==
+    BUTTON_RIGHT
+  ) {
 
-    if (currentScreen == SCREEN_HOME) {
-      currentScreen = SCREEN_CALENDAR;
-    }
-    else if (
-      currentScreen == SCREEN_CALENDAR
+    if (
+      currentScreen ==
+      SCREEN_HOME
     ) {
-      currentScreen = SCREEN_TIMER;
-    }
-    else if (
-      currentScreen == SCREEN_TIMER
-    ) {
-      currentScreen = SCREEN_HOME;
-    }
 
+      currentScreen =
+        SCREEN_CALENDAR;
+
+    } else if (
+      currentScreen ==
+      SCREEN_CALENDAR
+    ) {
+
+      currentScreen =
+        SCREEN_TIMER;
+
+    } else if (
+      currentScreen ==
+      SCREEN_TIMER
+    ) {
+
+      currentScreen =
+        SCREEN_HOME;
+    }
   }
 
-  else if (button == BUTTON_LEFT) {
+  else if (
+    button ==
+    BUTTON_LEFT
+  ) {
 
-    if (currentScreen == SCREEN_HOME) {
-      currentScreen = SCREEN_TIMER;
-    }
-    else if (
-      currentScreen == SCREEN_TIMER
+    if (
+      currentScreen ==
+      SCREEN_HOME
     ) {
-      currentScreen = SCREEN_CALENDAR;
-    }
-    else if (
-      currentScreen == SCREEN_CALENDAR
+
+      currentScreen =
+        SCREEN_TIMER;
+
+    } else if (
+      currentScreen ==
+      SCREEN_TIMER
     ) {
-      currentScreen = SCREEN_HOME;
+
+      currentScreen =
+        SCREEN_CALENDAR;
+
+    } else if (
+      currentScreen ==
+      SCREEN_CALENDAR
+    ) {
+
+      currentScreen =
+        SCREEN_HOME;
     }
   }
 }
@@ -793,7 +848,10 @@ void handleButton(
   ButtonEvent button
 ) {
 
-  if (button == BUTTON_NONE) {
+  if (
+    button ==
+    BUTTON_NONE
+  ) {
     return;
   }
 
@@ -803,7 +861,10 @@ void handleButton(
     SCREEN_NOTIFICATION
   ) {
 
-    if (button == BUTTON_OK) {
+    if (
+      button ==
+      BUTTON_OK
+    ) {
 
       currentScreen =
         screenBeforeNotification;
@@ -816,22 +877,27 @@ void handleButton(
     return;
   }
 
-  // LEFT / RIGHT는 기본 화면 이동
+  // LEFT / RIGHT는 화면 이동
   if (
-    button == BUTTON_LEFT ||
-    button == BUTTON_RIGHT
+    button ==
+      BUTTON_LEFT ||
+    button ==
+      BUTTON_RIGHT
   ) {
 
-    moveMainScreen(button);
+    moveMainScreen(
+      button
+    );
 
     return;
   }
 
-  // TIMER 화면에서 OK → 시작
+  // TIMER에서 OK → 시작
   if (
     currentScreen ==
-    SCREEN_TIMER &&
-    button == BUTTON_OK &&
+      SCREEN_TIMER &&
+    button ==
+      BUTTON_OK &&
     !timerRunning
   ) {
 
@@ -864,7 +930,10 @@ void setup() {
     INPUT_PULLUP
   );
 
-  Wire.begin(21, 22);
+  Wire.begin(
+    21,
+    22
+  );
 
   if (
     !display.begin(
@@ -878,14 +947,18 @@ void setup() {
     );
 
     while (true) {
+      delay(1000);
     }
   }
 
-  showMessage("BOOTING...");
+  showMessage(
+    "BOOTING..."
+  );
 
   delay(500);
 
   connectWiFi();
+
   syncTime();
 
   createTestSchedule();
@@ -904,20 +977,24 @@ void loop() {
   ButtonEvent button =
     readButtonEvent();
 
-  handleButton(button);
+  handleButton(
+    button
+  );
 
   checkScheduleReminder();
 
 
-  // 타이머는 현재 보고 있는 화면과
-  // 상관없이 계속 진행한다.
+  // 타이머는 현재 화면과 관계없이
+  // 백그라운드에서 계속 진행
   if (
     timerRunning &&
-    millis() - timerStartedAt >=
-    TIMER_DURATION_MS
+    millis() -
+      timerStartedAt >=
+      TIMER_DURATION_MS
   ) {
 
-    timerRunning = false;
+    timerRunning =
+      false;
 
     triggerNotification(
       "TIMER",
@@ -926,6 +1003,7 @@ void loop() {
   }
 
 
+  // 현재 화면 출력
   if (
     currentScreen ==
     SCREEN_HOME
@@ -954,7 +1032,6 @@ void loop() {
 
     showNotification();
   }
-
 
   delay(20);
 }
