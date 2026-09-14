@@ -85,6 +85,16 @@ enum ScreenMode {
 
 
 // --------------------------------------------------
+// 장치 동작 모드
+// --------------------------------------------------
+
+enum DeviceMode {
+  MODE_DESK,
+  MODE_GAME
+};
+
+
+// --------------------------------------------------
 // 일정 데이터 타입
 // --------------------------------------------------
 
@@ -107,7 +117,8 @@ enum ButtonEvent {
   BUTTON_NONE,
   BUTTON_LEFT,
   BUTTON_OK,
-  BUTTON_RIGHT
+  BUTTON_RIGHT,
+  BUTTON_MODE_SWITCH
 };
 
 
@@ -173,6 +184,18 @@ void handleButton(
   ButtonEvent button
 );
 
+void switchDeviceMode();
+
+void drawDeskPet();
+
+void drawGameGraphics();
+
+void drawGameTextScreen();
+
+void showGameNotification();
+
+void updatePokemonAnimation();
+
 
 // --------------------------------------------------
 // 현재 화면
@@ -180,6 +203,9 @@ void handleButton(
 
 ScreenMode currentScreen =
   SCREEN_HOME;
+
+DeviceMode deviceMode =
+  MODE_DESK;
 
 
 // --------------------------------------------------
@@ -267,6 +293,11 @@ unsigned long lastButtonChangeAt[3] = {
 const unsigned long BUTTON_DEBOUNCE_MS =
   30;
 
+// LEFT + RIGHT를 이 시간 이상 동시에 누르면
+// DESK ↔ GAME 모드를 전환한다.
+const unsigned long MODE_SWITCH_HOLD_MS =
+  1000;
+
 
 // --------------------------------------------------
 // 타이머 상태
@@ -313,7 +344,7 @@ bool wifiWasConnected =
 
 
 // --------------------------------------------------
-// Desk Pet 상태
+// Pokémon / 게임 화면 상태
 // --------------------------------------------------
 
 #if HAS_LOCAL_PIKACHU_ASSET
@@ -329,22 +360,38 @@ const uint16_t PIKACHU_IDLE_FRAME_DURATION_MS[
   100
 };
 
-int deskPetFrame =
+int pokemonIdleFrame =
   0;
 
-unsigned long deskPetFrameStartedAt =
+unsigned long pokemonIdleFrameStartedAt =
   0;
 
 #endif
 
 
+const char* GAME_MENU_ITEMS[] = {
+  "STATUS",
+  "EXPLORE",
+  "POKEDEX"
+};
+
+const int GAME_MENU_ITEM_COUNT =
+  sizeof(GAME_MENU_ITEMS) /
+  sizeof(GAME_MENU_ITEMS[0]);
+
+int gameMenuIndex =
+  0;
+
+
 // --------------------------------------------------
-// Desk Pet 화면
+// 포켓몬 그래픽 공통 출력
 // --------------------------------------------------
 
-void drawDeskPet() {
+void drawPokemonGraphic(
+  Adafruit_SSD1306& target
+) {
 
-  gameDisplay.clearDisplay();
+  target.clearDisplay();
 
 #if HAS_LOCAL_PIKACHU_ASSET
 
@@ -360,11 +407,11 @@ void drawDeskPet() {
       PIKACHU_IDLE_FRAME_HEIGHT
     ) / 2;
 
-  gameDisplay.drawBitmap(
+  target.drawBitmap(
     x,
     y,
     pikachu_idle_frames[
-      deskPetFrame
+      pokemonIdleFrame
     ],
     PIKACHU_IDLE_FRAME_WIDTH,
     PIKACHU_IDLE_FRAME_HEIGHT,
@@ -373,8 +420,85 @@ void drawDeskPet() {
 
 #else
 
-  // 공개 저장소에는 포켓몬 애셋을 넣지 않으므로
-  // 로컬 애셋이 없을 때도 펌웨어 자체는 정상 컴파일된다.
+  target.setTextColor(
+    SSD1306_WHITE
+  );
+
+  target.setTextSize(1);
+
+  target.setCursor(
+    0,
+    0
+  );
+
+  target.println(
+    "POKEMON"
+  );
+
+  target.drawLine(
+    0,
+    12,
+    127,
+    12,
+    SSD1306_WHITE
+  );
+
+  target.setCursor(
+    12,
+    27
+  );
+
+  target.println(
+    "LOCAL ASSET"
+  );
+
+  target.setCursor(
+    21,
+    40
+  );
+
+  target.println(
+    "NOT FOUND"
+  );
+
+#endif
+
+  target.display();
+}
+
+
+// --------------------------------------------------
+// DESK MODE 오른쪽 OLED
+// --------------------------------------------------
+
+void drawDeskPet() {
+
+  drawPokemonGraphic(
+    gameDisplay
+  );
+}
+
+
+// --------------------------------------------------
+// GAME MODE 왼쪽 OLED
+// --------------------------------------------------
+
+void drawGameGraphics() {
+
+  drawPokemonGraphic(
+    display
+  );
+}
+
+
+// --------------------------------------------------
+// GAME MODE 오른쪽 텍스트/UI OLED
+// --------------------------------------------------
+
+void drawGameTextScreen() {
+
+  gameDisplay.clearDisplay();
+
   gameDisplay.setTextColor(
     SSD1306_WHITE
   );
@@ -386,47 +510,120 @@ void drawDeskPet() {
     0
   );
 
-  gameDisplay.println(
-    "DESK PET"
+  gameDisplay.print(
+    "POKEMON GAME"
   );
 
   gameDisplay.drawLine(
     0,
-    12,
+    11,
     127,
-    12,
+    11,
     SSD1306_WHITE
   );
 
   gameDisplay.setCursor(
-    12,
-    27
+    0,
+    17
   );
 
-  gameDisplay.println(
-    "LOCAL ASSET"
+  gameDisplay.print(
+    "Pikachu"
   );
 
   gameDisplay.setCursor(
-    21,
-    40
+    0,
+    30
   );
 
-  gameDisplay.println(
-    "NOT FOUND"
+  gameDisplay.print(
+    "> "
   );
 
-#endif
+  gameDisplay.print(
+    GAME_MENU_ITEMS[
+      gameMenuIndex
+    ]
+  );
+
+  gameDisplay.setCursor(
+    0,
+    45
+  );
+
+  gameDisplay.print(
+    "L/R SELECT"
+  );
+
+  gameDisplay.setCursor(
+    0,
+    56
+  );
+
+  gameDisplay.print(
+    "OK ENTER"
+  );
 
   gameDisplay.display();
 }
 
 
 // --------------------------------------------------
-// Desk Pet 애니메이션 갱신
+// GAME MODE 중 Smart Desk 알림
+// 오른쪽 텍스트 OLED에 표시한다.
 // --------------------------------------------------
 
-void updateDeskPet() {
+void showGameNotification() {
+
+  gameDisplay.clearDisplay();
+
+  gameDisplay.setTextColor(
+    SSD1306_WHITE
+  );
+
+  drawUtf8Text(
+    gameDisplay,
+    0,
+    0,
+    notificationTitle
+  );
+
+  gameDisplay.drawLine(
+    0,
+    18,
+    127,
+    18,
+    SSD1306_WHITE
+  );
+
+  drawScrollingUtf8Text(
+    gameDisplay,
+    0,
+    24,
+    128,
+    notificationMessage
+  );
+
+  gameDisplay.setTextSize(1);
+
+  gameDisplay.setCursor(
+    30,
+    56
+  );
+
+  gameDisplay.print(
+    "OK DISMISS"
+  );
+
+  gameDisplay.display();
+}
+
+
+// --------------------------------------------------
+// 포켓몬 Idle 애니메이션 갱신
+// --------------------------------------------------
+
+void updatePokemonAnimation() {
 
 #if HAS_LOCAL_PIKACHU_ASSET
 
@@ -435,25 +632,78 @@ void updateDeskPet() {
 
   if (
     now -
-      deskPetFrameStartedAt >=
+      pokemonIdleFrameStartedAt >=
       PIKACHU_IDLE_FRAME_DURATION_MS[
-        deskPetFrame
+        pokemonIdleFrame
       ]
   ) {
 
-    deskPetFrame =
+    pokemonIdleFrame =
       (
-        deskPetFrame + 1
+        pokemonIdleFrame + 1
       ) %
       PIKACHU_IDLE_FRAME_COUNT;
 
-    deskPetFrameStartedAt =
+    pokemonIdleFrameStartedAt =
       now;
 
-    drawDeskPet();
+    if (
+      deviceMode ==
+      MODE_DESK
+    ) {
+      drawDeskPet();
+
+    } else {
+      drawGameGraphics();
+    }
   }
 
 #endif
+}
+
+
+// --------------------------------------------------
+// DESK ↔ GAME 모드 전환
+// --------------------------------------------------
+
+void switchDeviceMode() {
+
+  if (
+    deviceMode ==
+    MODE_DESK
+  ) {
+
+    deviceMode =
+      MODE_GAME;
+
+    Serial.println(
+      "Mode changed: GAME"
+    );
+
+    drawGameGraphics();
+
+    if (
+      currentScreen ==
+      SCREEN_NOTIFICATION
+    ) {
+      showGameNotification();
+
+    } else {
+      drawGameTextScreen();
+    }
+
+  } else {
+
+    deviceMode =
+      MODE_DESK;
+
+    Serial.println(
+      "Mode changed: DESK"
+    );
+
+    // 오른쪽 OLED를 다시 Desk Pet 화면으로 복구.
+    drawDeskPet();
+  }
 }
 
 
@@ -2348,9 +2598,33 @@ void showNotification() {
 
 // --------------------------------------------------
 // 3버튼 입력
+//
+// LEFT / RIGHT 단독 입력은 "뗄 때" 확정한다.
+// 그래서 두 버튼을 함께 눌러 GAME MODE로 전환할 때
+// Smart Desk 화면이 실수로 한 칸 움직이지 않는다.
 // --------------------------------------------------
 
 ButtonEvent readButtonEvent() {
+
+  unsigned long now =
+    millis();
+
+  bool pressedEdge[3] = {
+    false,
+    false,
+    false
+  };
+
+  bool releasedEdge[3] = {
+    false,
+    false,
+    false
+  };
+
+
+  // -------------------------
+  // 모든 버튼 debounce 먼저 처리
+  // -------------------------
 
   for (
     int i = 0;
@@ -2363,25 +2637,22 @@ ButtonEvent readButtonEvent() {
         BUTTON_PINS[i]
       );
 
-
     if (
       reading !=
       lastButtonReadings[i]
     ) {
 
       lastButtonChangeAt[i] =
-        millis();
+        now;
 
       lastButtonReadings[i] =
         reading;
     }
 
-
     if (
-      millis() -
-      lastButtonChangeAt[i]
-      >
-      BUTTON_DEBOUNCE_MS
+      now -
+        lastButtonChangeAt[i] >
+        BUTTON_DEBOUNCE_MS
     ) {
 
       if (
@@ -2392,21 +2663,179 @@ ButtonEvent readButtonEvent() {
         stableButtonStates[i] =
           reading;
 
-
         if (
-          stableButtonStates[i] ==
+          reading ==
           LOW
         ) {
+          pressedEdge[i] =
+            true;
 
-          return
-            BUTTON_EVENTS[i];
+        } else {
+          releasedEdge[i] =
+            true;
         }
       }
     }
   }
 
 
-  return BUTTON_NONE;
+  static bool leftPending =
+    false;
+
+  static bool rightPending =
+    false;
+
+  static bool chordActive =
+    false;
+
+  static bool chordTriggered =
+    false;
+
+  static unsigned long chordStartedAt =
+    0;
+
+
+  if (
+    pressedEdge[0]
+  ) {
+    leftPending =
+      true;
+  }
+
+  if (
+    pressedEdge[2]
+  ) {
+    rightPending =
+      true;
+  }
+
+
+  bool leftDown =
+    stableButtonStates[0] ==
+    LOW;
+
+  bool rightDown =
+    stableButtonStates[2] ==
+    LOW;
+
+
+  // -------------------------
+  // LEFT + RIGHT 길게 누르기
+  // -------------------------
+
+  if (
+    leftDown &&
+    rightDown
+  ) {
+
+    if (
+      !chordActive
+    ) {
+
+      chordActive =
+        true;
+
+      chordTriggered =
+        false;
+
+      chordStartedAt =
+        now;
+    }
+
+
+    if (
+      !chordTriggered &&
+      now -
+        chordStartedAt >=
+        MODE_SWITCH_HOLD_MS
+    ) {
+
+      chordTriggered =
+        true;
+
+      leftPending =
+        false;
+
+      rightPending =
+        false;
+
+      return
+        BUTTON_MODE_SWITCH;
+    }
+
+
+    return
+      BUTTON_NONE;
+  }
+
+
+  // 두 버튼을 함께 눌렀다가 뗀 경우에는
+  // LEFT/RIGHT 단독 입력으로 처리하지 않는다.
+  if (
+    chordActive
+  ) {
+
+    if (
+      !leftDown &&
+      !rightDown
+    ) {
+
+      chordActive =
+        false;
+
+      chordTriggered =
+        false;
+
+      leftPending =
+        false;
+
+      rightPending =
+        false;
+    }
+
+    return
+      BUTTON_NONE;
+  }
+
+
+  // OK는 기존처럼 누르는 순간 처리한다.
+  if (
+    pressedEdge[1]
+  ) {
+    return
+      BUTTON_OK;
+  }
+
+
+  // LEFT / RIGHT는 버튼을 뗄 때 단독 입력 확정.
+  if (
+    releasedEdge[0] &&
+    leftPending
+  ) {
+
+    leftPending =
+      false;
+
+    return
+      BUTTON_LEFT;
+  }
+
+
+  if (
+    releasedEdge[2] &&
+    rightPending
+  ) {
+
+    rightPending =
+      false;
+
+    return
+      BUTTON_RIGHT;
+  }
+
+
+  return
+    BUTTON_NONE;
 }
 
 
@@ -2507,7 +2936,26 @@ void handleButton(
   }
 
 
-  // 알림에서는 OK만 사용
+  // -------------------------
+  // 전역 모드 전환
+  // -------------------------
+
+  if (
+    button ==
+    BUTTON_MODE_SWITCH
+  ) {
+
+    switchDeviceMode();
+
+    return;
+  }
+
+
+  // -------------------------
+  // Smart Desk 알림은 양 모드 공통
+  // OK로 닫는다.
+  // -------------------------
+
   if (
     currentScreen ==
     SCREEN_NOTIFICATION
@@ -2524,11 +2972,91 @@ void handleButton(
       Serial.println(
         "Notification dismissed"
       );
+
+      if (
+        deviceMode ==
+        MODE_GAME
+      ) {
+        drawGameTextScreen();
+      }
     }
 
     return;
   }
 
+
+  // -------------------------
+  // GAME MODE 버튼
+  // -------------------------
+
+  if (
+    deviceMode ==
+    MODE_GAME
+  ) {
+
+    if (
+      button ==
+      BUTTON_LEFT
+    ) {
+
+      gameMenuIndex =
+        (
+          gameMenuIndex -
+          1 +
+          GAME_MENU_ITEM_COUNT
+        ) %
+        GAME_MENU_ITEM_COUNT;
+
+      drawGameTextScreen();
+
+      return;
+    }
+
+
+    if (
+      button ==
+      BUTTON_RIGHT
+    ) {
+
+      gameMenuIndex =
+        (
+          gameMenuIndex +
+          1
+        ) %
+        GAME_MENU_ITEM_COUNT;
+
+      drawGameTextScreen();
+
+      return;
+    }
+
+
+    if (
+      button ==
+      BUTTON_OK
+    ) {
+
+      Serial.print(
+        "Game menu selected: "
+      );
+
+      Serial.println(
+        GAME_MENU_ITEMS[
+          gameMenuIndex
+        ]
+      );
+
+      return;
+    }
+
+
+    return;
+  }
+
+
+  // -------------------------
+  // DESK MODE 버튼
+  // -------------------------
 
   // CALENDAR에서 OK → 다음 페이지
   if (
@@ -2540,7 +3068,6 @@ void handleButton(
 
     int pageCount =
       getCalendarPageCount();
-
 
     if (
       pageCount > 1
@@ -2557,7 +3084,7 @@ void handleButton(
   }
 
 
-  // LEFT / RIGHT → 화면 이동
+  // LEFT / RIGHT → Smart Desk 화면 이동
   if (
     button ==
       BUTTON_LEFT ||
@@ -2685,8 +3212,8 @@ void setup() {
   // 두 번째 화면은 네트워크 초기화 중에도
   // Desk Pet 화면을 먼저 보여준다.
 #if HAS_LOCAL_PIKACHU_ASSET
-  deskPetFrame = 0;
-  deskPetFrameStartedAt =
+  pokemonIdleFrame = 0;
+  pokemonIdleFrameStartedAt =
     millis();
 #endif
 
@@ -2793,6 +3320,13 @@ void setup() {
 
   currentScreen =
     SCREEN_HOME;
+
+  deviceMode =
+    MODE_DESK;
+
+  Serial.println(
+    "Mode: DESK"
+  );
 }
 
 
@@ -2911,36 +3445,65 @@ void loop() {
   }
 
 
-  // 현재 화면 출력
+  // --------------------------------------------------
+  // 화면 출력
+  // --------------------------------------------------
+
   if (
-    currentScreen ==
-    SCREEN_HOME
+    deviceMode ==
+    MODE_DESK
   ) {
-    showHome();
 
-  } else if (
-    currentScreen ==
-    SCREEN_CALENDAR
-  ) {
-    showCalendar();
+    // OLED 1 = Smart Desk
+    if (
+      currentScreen ==
+      SCREEN_HOME
+    ) {
+      showHome();
 
-  } else if (
-    currentScreen ==
-    SCREEN_TIMER
-  ) {
-    showTimer();
+    } else if (
+      currentScreen ==
+      SCREEN_CALENDAR
+    ) {
+      showCalendar();
 
-  } else if (
-    currentScreen ==
-    SCREEN_NOTIFICATION
-  ) {
-    showNotification();
+    } else if (
+      currentScreen ==
+      SCREEN_TIMER
+    ) {
+      showTimer();
+
+    } else if (
+      currentScreen ==
+      SCREEN_NOTIFICATION
+    ) {
+      showNotification();
+    }
+
+  } else {
+
+    // GAME MODE:
+    // OLED 1 = 포켓몬 그래픽
+    // OLED 2 = 게임 텍스트/UI
+    //
+    // 일정 알림이 있을 때만 OLED 2를
+    // Smart Desk 알림에 잠시 빌려준다.
+    if (
+      currentScreen ==
+      SCREEN_NOTIFICATION
+    ) {
+      showGameNotification();
+
+    } else {
+      drawGameTextScreen();
+    }
   }
 
 
-  // 두 번째 OLED의 Desk Pet은
-  // Smart Desk 화면과 독립적으로 계속 움직인다.
-  updateDeskPet();
+  // 포켓몬 애니메이션은 어느 모드에서도 계속 진행한다.
+  // DESK MODE에서는 OLED 2,
+  // GAME MODE에서는 OLED 1에 그린다.
+  updatePokemonAnimation();
 
 
   delay(20);
