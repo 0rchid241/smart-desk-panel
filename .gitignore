@@ -25,3 +25,6 @@ build/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local game assets
+firmware/smart_desk_esp32/local_game_assets/

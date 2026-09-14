@@ -11,6 +11,15 @@
 #include "wifi_secrets.h"
 #include "hangul_renderer.h"
 
+// 로컬 전용 포켓몬 애셋.
+// 이 파일은 Git에 올리지 않아도 공개 저장소가 컴파일되도록 조건부 포함한다.
+#if __has_include("local_game_assets/pokemon/pikachu_idle_1bit.h")
+  #include "local_game_assets/pokemon/pikachu_idle_1bit.h"
+  #define HAS_LOCAL_PIKACHU_ASSET 1
+#else
+  #define HAS_LOCAL_PIKACHU_ASSET 0
+#endif
+
 
 // --------------------------------------------------
 // 하드웨어 설정
@@ -33,12 +42,28 @@ const bool FORCE_OFFLINE_TEST_MODE =
   false;
 
 
+// OLED 1: Smart Desk / 추후 GAME 그래픽 화면
+// SDA = GPIO21, SCL = GPIO22
 Adafruit_SSD1306 display(
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
   &Wire,
   OLED_RESET
 );
+
+
+// OLED 2: 평상시 Desk Pet / 추후 GAME 텍스트 화면
+// SDA = GPIO16, SCL = GPIO17
+TwoWire gameWire =
+  TwoWire(1);
+
+Adafruit_SSD1306 gameDisplay(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &gameWire,
+  OLED_RESET
+);
+
 
 Preferences preferences;
 Preferences calendarCachePreferences;
@@ -285,6 +310,151 @@ unsigned long lastWifiReconnectAt =
 
 bool wifiWasConnected =
   false;
+
+
+// --------------------------------------------------
+// Desk Pet 상태
+// --------------------------------------------------
+
+#if HAS_LOCAL_PIKACHU_ASSET
+
+const uint16_t PIKACHU_IDLE_FRAME_DURATION_MS[
+  PIKACHU_IDLE_FRAME_COUNT
+] = {
+  2000,
+  100,
+  150,
+  150,
+  150,
+  100
+};
+
+int deskPetFrame =
+  0;
+
+unsigned long deskPetFrameStartedAt =
+  0;
+
+#endif
+
+
+// --------------------------------------------------
+// Desk Pet 화면
+// --------------------------------------------------
+
+void drawDeskPet() {
+
+  gameDisplay.clearDisplay();
+
+#if HAS_LOCAL_PIKACHU_ASSET
+
+  const int x =
+    (
+      SCREEN_WIDTH -
+      PIKACHU_IDLE_FRAME_WIDTH
+    ) / 2;
+
+  const int y =
+    (
+      SCREEN_HEIGHT -
+      PIKACHU_IDLE_FRAME_HEIGHT
+    ) / 2;
+
+  gameDisplay.drawBitmap(
+    x,
+    y,
+    pikachu_idle_frames[
+      deskPetFrame
+    ],
+    PIKACHU_IDLE_FRAME_WIDTH,
+    PIKACHU_IDLE_FRAME_HEIGHT,
+    SSD1306_WHITE
+  );
+
+#else
+
+  // 공개 저장소에는 포켓몬 애셋을 넣지 않으므로
+  // 로컬 애셋이 없을 때도 펌웨어 자체는 정상 컴파일된다.
+  gameDisplay.setTextColor(
+    SSD1306_WHITE
+  );
+
+  gameDisplay.setTextSize(1);
+
+  gameDisplay.setCursor(
+    0,
+    0
+  );
+
+  gameDisplay.println(
+    "DESK PET"
+  );
+
+  gameDisplay.drawLine(
+    0,
+    12,
+    127,
+    12,
+    SSD1306_WHITE
+  );
+
+  gameDisplay.setCursor(
+    12,
+    27
+  );
+
+  gameDisplay.println(
+    "LOCAL ASSET"
+  );
+
+  gameDisplay.setCursor(
+    21,
+    40
+  );
+
+  gameDisplay.println(
+    "NOT FOUND"
+  );
+
+#endif
+
+  gameDisplay.display();
+}
+
+
+// --------------------------------------------------
+// Desk Pet 애니메이션 갱신
+// --------------------------------------------------
+
+void updateDeskPet() {
+
+#if HAS_LOCAL_PIKACHU_ASSET
+
+  unsigned long now =
+    millis();
+
+  if (
+    now -
+      deskPetFrameStartedAt >=
+      PIKACHU_IDLE_FRAME_DURATION_MS[
+        deskPetFrame
+      ]
+  ) {
+
+    deskPetFrame =
+      (
+        deskPetFrame + 1
+      ) %
+      PIKACHU_IDLE_FRAME_COUNT;
+
+    deskPetFrameStartedAt =
+      now;
+
+    drawDeskPet();
+  }
+
+#endif
+}
 
 
 // --------------------------------------------------
@@ -2444,19 +2614,35 @@ void setup() {
     INPUT_PULLUP
   );
 
+  // -------------------------
+  // OLED 1 / OLED 2 I2C 버스 시작
+  // -------------------------
+
   Wire.begin(
     21,
     22
   );
 
+  gameWire.begin(
+    16,
+    17
+  );
+
+
+  // -------------------------
+  // OLED 1: Smart Desk
+  // -------------------------
+
   if (
     !display.begin(
       SSD1306_SWITCHCAPVCC,
-      SCREEN_ADDRESS
+      SCREEN_ADDRESS,
+      true,
+      false
     )
   ) {
     Serial.println(
-      "OLED init failed"
+      "Desk OLED init failed"
     );
 
     while (true) {
@@ -2464,9 +2650,47 @@ void setup() {
     }
   }
 
+
+  // -------------------------
+  // OLED 2: Desk Pet / Game
+  // -------------------------
+
+  if (
+    !gameDisplay.begin(
+      SSD1306_SWITCHCAPVCC,
+      SCREEN_ADDRESS,
+      true,
+      false
+    )
+  ) {
+    Serial.println(
+      "Game OLED init failed"
+    );
+
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  Serial.println(
+    "Both OLEDs initialized"
+  );
+
+
   showMessage(
     "BOOTING..."
   );
+
+
+  // 두 번째 화면은 네트워크 초기화 중에도
+  // Desk Pet 화면을 먼저 보여준다.
+#if HAS_LOCAL_PIKACHU_ASSET
+  deskPetFrame = 0;
+  deskPetFrameStartedAt =
+    millis();
+#endif
+
+  drawDeskPet();
 
   delay(500);
 
@@ -2712,6 +2936,12 @@ void loop() {
   ) {
     showNotification();
   }
+
+
+  // 두 번째 OLED의 Desk Pet은
+  // Smart Desk 화면과 독립적으로 계속 움직인다.
+  updateDeskPet();
+
 
   delay(20);
 }
