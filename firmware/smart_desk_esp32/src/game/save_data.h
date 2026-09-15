@@ -2,11 +2,13 @@
 #include "game_state.h"
 
 namespace PokemonGame {
-constexpr uint16_t SAVE_VERSION = 1;
+constexpr uint16_t SAVE_VERSION = 2;
 constexpr size_t SAVE_HEADER_SIZE = 18;
 constexpr size_t POKEMON_RECORD_SIZE = 24;
-constexpr size_t SAVE_MAX_SIZE = SAVE_HEADER_SIZE + 14 + 1 +
+constexpr size_t SAVE_V1_MAX_SIZE = SAVE_HEADER_SIZE + 14 + 1 +
                                PARTY_CAPACITY * POKEMON_RECORD_SIZE + 3 * POKEDEX_BYTES;
+constexpr size_t EXPLORATION_RECORD_SIZE = 15;
+constexpr size_t SAVE_MAX_SIZE = SAVE_V1_MAX_SIZE + EXPLORATION_RECORD_SIZE;
 struct GameSave {
   uint16_t saveVersion = SAVE_VERSION;
   uint32_t sequence = 0;
@@ -15,6 +17,7 @@ struct GameSave {
 enum class DecodeResult { Ok, Invalid, UnsupportedVersion };
 // Fixed little-endian wire format, independent of compiler padding or Arduino.
 bool serialize(const GameSave& save, uint8_t* output, size_t capacity, size_t& written);
+// v1 loads with Idle exploration and saveVersion=1, for a safe v2 write on migration.
 // Failure leaves output unchanged. CRC covers header (except CRC field) + payload.
 DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output);
 }

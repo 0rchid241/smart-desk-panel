@@ -65,7 +65,7 @@ void codecTests() {
   save.state.progress.playTimeSeconds = 987654;
   auto bytes = encode(save);
   assert(bytes.size() == SAVE_MAX_SIZE);
-  assert(bytes[0] == 'P' && bytes[4] == 1 && bytes[5] == 0);
+  assert(bytes[0] == 'P' && bytes[4] == 2 && bytes[5] == 0);
   assert(bytes[6] == 0x78 && bytes[7] == 0x56 && bytes[8] == 0x34 && bytes[9] == 0x12);
   GameSave decoded;
   assert(deserialize(bytes.data(), bytes.size(), decoded) == DecodeResult::Ok);
@@ -86,7 +86,7 @@ void codecTests() {
   }
   auto broken = bytes; broken.push_back(0);
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::Invalid);
-  broken = bytes; broken[4] = 2; updateCrc(broken);
+  broken = bytes; broken[4] = 3; updateCrc(broken);
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::UnsupportedVersion);
   broken = bytes; broken[32] = 4; updateCrc(broken); // party count
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::Invalid);
@@ -147,7 +147,7 @@ void storageTests() {
   assert(GameSaveStorage::save(rebooted));
   assert(GameSaveStorage::load(rebooted) == LoadResult::Loaded);
 
-  auto future = encode(rebooted); future[4] = 2; updateCrc(future);
+  auto future = encode(rebooted); future[4] = 3; updateCrc(future);
   FakeNvs::data["pokemon_g1/save_b"] = future;
   const auto before = FakeNvs::data;
   assert(GameSaveStorage::load(rebooted) == LoadResult::UnsupportedVersion);
@@ -172,4 +172,130 @@ void storageTests() {
   std::puts("PASS storage: reboot, A/B recovery, torn write, errors, versions, namespace isolation");
 }
 
-int main() { codecTests(); storageTests(); }
+// Frozen G1 field order. Deliberately independent of the current serializer.
+std::vector<uint8_t> legacyRecord(const GameSave& save) {
+  std::vector<uint8_t> bytes = {'P', 'K', 'D', 'G', 1, 0};
+  auto append = [&](uint32_t value, unsigned count) {
+    for (unsigned i = 0; i < count; ++i) bytes.push_back(static_cast<uint8_t>(value >> (8 * i)));
+  };
+  append(save.sequence, 4);
+  append(15 + save.state.party.count * 24 + 387, 4);
+  append(0, 4);
+  const auto& progress = save.state.progress;
+  append(progress.nextInstanceId, 4); append(progress.deskPetId, 4);
+  append(progress.ballTier, 1); append(progress.masterBallCount, 1); append(progress.playTimeSeconds, 4);
+  append(save.state.party.count, 1);
+  for (uint8_t i = 0; i < save.state.party.count; ++i) {
+    const auto& p = save.state.party.members[i];
+    append(p.instanceId, 4); append(p.speciesId, 2); append(p.exp, 4); append(p.currentHp, 2);
+    for (MoveId move : p.moves) append(move, 2);
+    append(p.level, 1); append(p.friendship, 1); append(p.formId, 1);
+    append(static_cast<uint8_t>(p.gender) | (p.shiny ? 4u : 0u), 1);
+  }
+  for (const uint8_t* bits : {save.state.pokedex.seen, save.state.pokedex.caught, save.state.pokedex.shinyCaught})
+    bytes.insert(bytes.end(), bits, bits + 129);
+  updateCrc(bytes);
+  return bytes;
+}
+
+void explorationTests() {
+  constexpr uint64_t start = 1800000000ULL;
+  ExplorationSession session;
+  assert(!startExploration(session, TEST_REGION_ID, 0, 15));
+  assert(!startExploration(session, TEST_REGION_ID, MIN_EXPLORATION_EPOCH - 1, 15));
+  assert(!startExploration(session, 2, start, 15));
+  assert(!startExploration(session, TEST_REGION_ID, start, 0));
+  assert(!startExploration(session, TEST_REGION_ID, std::numeric_limits<uint64_t>::max(), 15));
+  assert(startExploration(session, TEST_REGION_ID, start, 15));
+  assert(session.regionId == TEST_REGION_ID && session.startedAtEpoch == start && session.durationSeconds == 15);
+  assert(session.status == ExplorationStatus::Exploring);
+  assert(!startExploration(session, TEST_REGION_ID, start + 1, 15));
+  assert(remainingSeconds(session, start) == 15);
+  assert(remainingSeconds(session, start + 3) == 12);
+  assert(remainingSeconds(session, start + 14) == 1);
+  assert(remainingSeconds(session, start + 15) == 0);
+  assert(!updateExploration(session, 0) && !updateExploration(session, start - 1));
+  assert(remainingSeconds(session, start - 1) == 15);
+  assert(!updateExploration(session, start + 14));
+
+  GameSave save; save.state = createNewGame(); save.state.exploration = session;
+  GameSave rebooted;
+  auto bytes = encode(save);
+  assert(deserialize(bytes.data(), bytes.size(), rebooted) == DecodeResult::Ok);
+  assert(encode(rebooted) == bytes);
+  assert(!updateExploration(rebooted.state.exploration, 0)); // Offline reboot.
+  assert(rebooted.state.exploration.startedAtEpoch == start);
+  assert(updateExploration(rebooted.state.exploration, start + 15));
+  assert(rebooted.state.exploration.status == ExplorationStatus::Complete);
+  assert(!updateExploration(rebooted.state.exploration, start + 9999));
+  bytes = encode(rebooted);
+  assert(deserialize(bytes.data(), bytes.size(), save) == DecodeResult::Ok);
+  assert(save.state.exploration.status == ExplorationStatus::Complete);
+  assert(acknowledgeExploration(save.state.exploration));
+  assert(save.state.exploration.status == ExplorationStatus::Idle && save.state.exploration.startedAtEpoch == 0);
+  assert(!acknowledgeExploration(save.state.exploration));
+  // Full 64-bit epochs survive serialization; future duration > 60s is supported.
+  assert(startExploration(save.state.exploration, TEST_REGION_ID, 0x123456789ULL, 80));
+  bytes = encode(save);
+  assert(deserialize(bytes.data(), bytes.size(), rebooted) == DecodeResult::Ok);
+  assert(rebooted.state.exploration.startedAtEpoch == 0x123456789ULL);
+  assert(remainingSeconds(rebooted.state.exploration, 0x123456789ULL + 1) == 79);
+  // Correct CRC does not bypass exploration field validation.
+  for (size_t offset : {size_t(0), size_t(1), size_t(3), size_t(11)}) {
+    auto invalid = bytes;
+    const size_t position = bytes.size() - EXPLORATION_RECORD_SIZE;
+    if (offset == 0) invalid[position] = 9;
+    if (offset == 1) invalid[position + 1] = 2;
+    if (offset == 3) for (size_t i = 0; i < 8; ++i) invalid[position + 3 + i] = 0;
+    if (offset == 11) for (size_t i = 0; i < 4; ++i) invalid[position + 11 + i] = 0;
+    updateCrc(invalid);
+    assert(deserialize(invalid.data(), invalid.size(), rebooted) == DecodeResult::Invalid);
+  }
+  std::puts("PASS exploration: start, elapsed, offline/rollback, completion once, ack, 64-bit persistence");
+}
+
+void migrationTests() {
+  FakeNvs::reset();
+  GameSave original; original.state = createNewGame(); original.sequence = 41;
+  original.state.party.count = 3;
+  for (uint8_t i = 0; i < 3; ++i) {
+    original.state.party.members[i] = original.state.party.members[0];
+    auto& p = original.state.party.members[i];
+    p.instanceId = 10 + i; p.level = 5 + i; p.exp = 4567 + i;
+    p.friendship = 91 + i; p.currentHp = 3 + i;
+    p.gender = i == 1 ? Gender::Female : Gender::Male;
+    p.shiny = i == 2;
+  }
+  original.state.progress.deskPetId = 11; original.state.progress.nextInstanceId = 13;
+  original.state.progress.ballTier = 2; original.state.progress.masterBallCount = 3;
+  original.state.progress.playTimeSeconds = 987;
+  registerCaught(original.state.pokedex, 25, true);
+  registerCaught(original.state.pokedex, 1025, true);
+  const auto g1 = legacyRecord(original);
+  assert(g1.size() == 492);
+  FakeNvs::data["pokemon_g1/save_a"] = g1;
+  GameSave loaded;
+  assert(GameSaveStorage::load(loaded) == LoadResult::Loaded && loaded.saveVersion == 1);
+  assert(loaded.state.exploration.status == ExplorationStatus::Idle);
+  auto migrated = loaded; migrated.saveVersion = SAVE_VERSION;
+  assert(encode(migrated) == encode(original)); // All former fields, not just the partner.
+  FakeNvs::partialWrite = true;
+  assert(!GameSaveStorage::save(loaded) && loaded.saveVersion == 1 && loaded.sequence == 41);
+  assert(FakeNvs::data.at("pokemon_g1/save_a") == g1);
+  FakeNvs::partialWrite = false;
+  assert(GameSaveStorage::load(loaded) == LoadResult::Loaded && loaded.saveVersion == 1);
+  assert(GameSaveStorage::save(loaded) && loaded.saveVersion == SAVE_VERSION && loaded.sequence == 42);
+  assert(FakeNvs::data.at("pokemon_g1/save_a") == g1);
+  assert(GameSaveStorage::load(migrated) == LoadResult::Loaded && migrated.saveVersion == SAVE_VERSION);
+  assert(encode(loaded) == encode(migrated));
+  // Mixed-version slots: corrupted newest v2 recovers original v1, not a new game.
+  FakeNvs::data["pokemon_g1/save_b"].back() ^= 1;
+  assert(GameSaveStorage::load(loaded) == LoadResult::Loaded && loaded.sequence == 41 && loaded.saveVersion == 1);
+  // A higher sequence v1 must also win over a valid older v2.
+  FakeNvs::data["pokemon_g1/save_b"] = encode(migrated);
+  original.sequence = 43; FakeNvs::data["pokemon_g1/save_a"] = legacyRecord(original);
+  assert(GameSaveStorage::load(loaded) == LoadResult::Loaded && loaded.sequence == 43 && loaded.saveVersion == 1);
+  std::puts("PASS migration: G1 full party/progress/dex preserved, safe A/B upgrade and failure recovery");
+}
+
+int main() { codecTests(); storageTests(); explorationTests(); migrationTests(); }

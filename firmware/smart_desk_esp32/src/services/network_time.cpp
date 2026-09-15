@@ -208,6 +208,15 @@ bool update() {
 
 bool isConnected() { return WiFi.status() == WL_CONNECTED; }
 
+bool getCurrentEpoch(uint64_t& epoch) {
+  const time_t now = time(nullptr);
+  epoch = 0;
+  // Same validity threshold as the existing calendar/time display API.
+  if (now < 1700000000) return false;
+  epoch = static_cast<uint64_t>(now);
+  return true;
+}
+
 bool getCurrentTimeInfo(
   struct tm& timeinfo
 ) {

@@ -10,4 +10,6 @@ void startReconnectClock();
 bool update();
 bool isConnected();
 bool getCurrentTimeInfo(struct tm& timeinfo);
+// Read-only UTC epoch seconds. No network request; unavailable sets epoch to 0.
+bool getCurrentEpoch(uint64_t& epoch);
 }

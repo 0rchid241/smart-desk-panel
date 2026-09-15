@@ -73,6 +73,7 @@ void loop() {
   CalendarService::checkScheduleReminders(
     DeskApp::notificationActive(), DeskApp::triggerNotification);
   DeskApp::update();
+  GameApp::update();
 
   if (deviceMode == MODE_DESK) {
     DeskApp::render();

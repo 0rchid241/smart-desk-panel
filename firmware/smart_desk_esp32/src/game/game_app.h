@@ -5,6 +5,8 @@
 namespace GameApp {
 // Animation/menu state is private; mode routing is owned by the sketch.
 void init();
+// Runs in both device modes. Updates persistence only, never draws Desk UI.
+void update();
 void drawDeskPet();
 void drawGameGraphics();
 void drawGameTextScreen();

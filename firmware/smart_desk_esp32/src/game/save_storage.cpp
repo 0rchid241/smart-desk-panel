@@ -57,6 +57,7 @@ bool save(PokemonGame::GameSave& save) {
   using namespace PokemonGame;
   if (!writable || sequence == std::numeric_limits<uint32_t>::max()) return false;
   GameSave candidate = save;
+  candidate.saveVersion = SAVE_VERSION;
   candidate.sequence = sequence + 1;
   uint8_t bytes[SAVE_MAX_SIZE], verified[SAVE_MAX_SIZE];
   size_t length = 0;
@@ -69,6 +70,7 @@ bool save(PokemonGame::GameSave& save) {
   activeSlot = target;
   sequence = candidate.sequence;
   save.sequence = sequence;
+  save.saveVersion = candidate.saveVersion;
   return true;
 }
 }
