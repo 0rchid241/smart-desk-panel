@@ -15,7 +15,10 @@ Arduino IDE에서 상위 `smart_desk_esp32.ino`를 열어 빌드합니다.
 | `services/network_time` | Wi-Fi 연결·재연결 상태, NTP, 현재 시간 조회 |
 | `services/calendar_service` | 일정 배열, 날짜/정렬 조회, HTTPS/JSON, NVS/캐시, 알림 판단 |
 | `desk/desk_app` | HOME/CALENDAR/TIMER 화면, 페이지, 타이머, 공통 알림 상태·화면 |
-| `game/game_app` | Pikachu 프레임, Desk Pet, 게임 그래픽/메뉴, 임시 메뉴 입력 |
+| `game/game_app` | Pikachu 프레임, Desk Pet, 실제 GameState 기반 HOME/STATUS, 메뉴 입력 |
+| `game/pokemon`, `game/game_state` | 플랫폼 독립적인 종/개체/파티/도감/진행 상태, 초기 데이터, 검증 |
+| `game/save_data` | 플랫폼 독립적인 GameSave와 버전/CRC를 포함한 필드별 직렬화 |
+| `game/save_storage` | ESP32 Preferences 어댑터, 게임 전용 A/B 저장 및 복구 |
 
 가변 상태는 각 `.cpp`의 익명 namespace 안에 둡니다. 일정 조회는 복사 대신
 `const ScheduleEvent&`를 반환하며, 조회 인덱스와 참조는 동기화 이후 다시 얻습니다.
@@ -79,3 +82,100 @@ Arduino IDE에서 상위 `smart_desk_esp32.ino`를 열어 빌드합니다.
   해당 필드가 없거나 잘못된 타입이면 현재 목록이 비워질 수 있습니다.
 
 이번 변경에서는 기존 동작 보존을 위해 위 로직도 그대로 옮겼습니다.
+
+## Phase G1 — Game State Foundation
+
+게임 관련 파일만 확장합니다. 메인 스케치, Desk, 버튼/chord, 디스플레이 핀,
+네트워크/Calendar, 한글 렌더러 및 애셋 파일은 변경하지 않습니다.
+
+### 데이터와 초기화
+
+- `PokemonSpecies`: Pikachu 한 종의 이름/기본 능력치만 갖는 정적 테스트 데이터.
+- `PokemonInstance`: 32-bit instanceId, speciesId, level, EXP, currentHp,
+  gender, formId, shiny, friendship, 최대 4개 moveId.
+- `GameState`: 최대 3개체의 PartyState, GameProgress, PokedexState.
+  지정 파트너는 `progress.deskPetId`로 파티에서 조회합니다. Box는 아직 없습니다.
+- PokedexState는 seen/caught/shinyCaught 각각 129바이트입니다.
+  speciesId 1은 bit 0, 1025는 마지막 바이트 bit 0에 대응합니다.
+  도감 저장 용량만 준비하며 1,025종 콘텐츠나 도감 UI는 추가하지 않습니다.
+- GameProgress에는 nextInstanceId, deskPetId, ballTier, masterBallCount,
+  playTimeSeconds를 둡니다. 시간 누적/등급 해금 시스템은 아직 구현하지 않습니다.
+- 기존 `GameApp::init()`에서 Desk Pet을 그린 뒤 세이브를 읽습니다.
+  없거나 두 슬롯 모두 손상되었으면 테스트 파트너를 생성하고 즉시 최초 저장합니다.
+- 초기값: instanceId 1 / nextInstanceId 2, speciesId 25, Lv.5, EXP 0,
+  HP 18/18, Friendship 70, 기본 폼, 수컷, 일반 색상, moveId 84/45/0/0.
+  파티 첫 슬롯/Desk Pet으로 지정하고 도감 seen/caught를 등록합니다.
+  이는 G1 fixture이며 스타팅 질문·첫 지역 해금은 포함하지 않습니다.
+- HP = floor(2 × baseHp × level / 100) + level + 10;
+  나머지 능력치 = floor(2 × baseStat × level / 100) + 5.
+  IV/EV/성격 보정과 최종 능력치 저장은 없습니다. EXP는 현재 레벨 내 진행값으로
+  두며 실제 EXP 지급/레벨업 규칙은 후속 단계에서 구현합니다.
+
+### 저장 계약
+
+- 게임 전용 NVS namespace `pokemon_g1`, 키 `save_a`/`save_b`만 사용합니다.
+  Calendar의 `schedule`/`calcache`를 읽거나 수정하지 않습니다.
+- `GameSave` = saveVersion + sequence + GameState. 버전 1 레코드는
+  작은 정수를 명시적인 little-endian 순서로 기록합니다. struct raw write는 없습니다.
+- 18바이트 헤더: `PKDG`(4), saveVersion(2), sequence(4), payloadLength(4), CRC32(4).
+  CRC32/IEEE는 CRC 필드 자체를 제외한 헤더와 payload를 보호합니다.
+- payload: GameProgress(14), party count(1), 사용 중인 파티 개체(count × 24),
+  도감 bitset(387). 최초 1마리 세이브는 **444바이트**, 3마리는 **492바이트**입니다.
+- 개체 레코드 24바이트: instanceId(4), speciesId(2), exp(4), currentHp(2),
+  moves(8), level(1), friendship(1), formId(1), flags(1).
+  flags의 bit 0~1은 성별(0/1/2), bit 2는 shiny이고 나머지는 예약입니다.
+- 저장 시 비활성 슬롯에 sequence+1로 쓰고 바이트 수와 readback을 확인합니다.
+  성공할 때만 활성 슬롯/sequence를 변경합니다. 부팅 시 CRC와 상태 검증을 통과한
+  슬롯 중 높은 sequence를 선택합니다. 최신 슬롯이 손상되면 이전 슬롯을 사용합니다.
+  sequence가 uint32 최대치이면 wrap 대신 저장 실패를 반환합니다.
+- 현재 버전과 다른 데이터 또는 지원 크기를 초과하는 레코드는 보존합니다.
+  저장소 열기/읽기 오류도 기존 데이터를 덮어쓰지 않고 RAM 테스트 파트너로 동작합니다.
+  이러한 경우 HOME/STATUS에 `SAVE ERROR`, Serial에 원인을 표시합니다.
+- 최초 데이터 생성 이외에 G1 UI는 영구 상태를 변경하지 않습니다.
+  후속 기능은 `GameApp::state()`를 복사하여 수정한 다음 `GameApp::saveState(next)`를
+  호출합니다. 검증·저장 성공 시에만 실행 중 상태를 교체하며 실패하면 기존 상태를 유지합니다.
+  화면 그리기/STATUS 조회/모드 전환마다 저장하지 않습니다.
+
+### 화면
+
+OLED 1/Pikachu Idle 및 DESK Pet은 기존 구현 그대로입니다.
+GAME HOME은 실제 파트너의 이름, Lv, 현재/최대 HP와 기존 단일 선택 메뉴
+`STATUS / EXPLORE / POKEDEX`를 표시합니다.
+STATUS에서 이름/Lv/HP/EXP/Friendship을 한 화면에 표시하고 OK로 HOME에 돌아갑니다.
+STATUS의 LEFT/RIGHT는 동작하지 않습니다. EXPLORE/POKEDEX는 기존 Serial 선택 로그만
+남깁니다. Desk 알림 중 게임 화면이 가려졌다가 알림을 닫으면 현재 게임 화면으로 돌아옵니다.
+
+### G1 검증과 실기 체크
+
+2026-09-16: 설치된 Arduino CLI / ESP32 core 3.3.11,
+`esp32:esp32:esp32:PartitionScheme=huge_app` 전체 컴파일·링크 성공.
+
+| G1 빌드 | Flash | 전역 RAM |
+| --- | ---: | ---: |
+| 로컬 Pikachu 애셋 포함 | 1,454,204 bytes (46%) | 52,040 bytes (15%) |
+| 로컬 애셋 없는 복사본 | 1,452,472 bytes (46%) | 52,032 bytes (15%) |
+
+두 빌드의 게임 소스가 최종 소스와 동일함을 확인했고, fallback 의존 파일에는
+Pokémon bitmap 헤더가 포함되지 않았습니다. 장치 업로드는 수행하지 않았습니다.
+
+PC 테스트: 저장소 루트에서 `./firmware/tests/game_state/run.ps1` 실행(MSVC 필요).
+실제 게임 코어/codec/저장 어댑터를 빌드하며 Preferences만 메모리 fake로 대체합니다.
+초기값, ID/도감/HP 검증, 전체 필드 왕복, 단일 비트 손상/절단/잘못된 버전,
+변경 데이터 재로드, A/B 복구, 부분 쓰기/readback 실패, NVS 오류와 namespace 격리를 검사합니다.
+MSVC C++17 `/W4 /WX` 빌드와 모든 테스트가 통과했습니다.
+이 테스트는 실제 플래시의 전원 차단 검증을 대신하지 않습니다.
+
+실기 확인:
+
+1. 첫 부팅 Serial의 `Game: first save`/`Game save created`, GAME HOME의 Pikachu/Lv.5/18/18.
+2. 재부팅 후 `Game save loaded`; 같은 파트너와 STATUS의 EXP 0/Friendship 70.
+3. STATUS 진입/OK 복귀, 메뉴 순환, STATUS 중 DESK/GAME 전환과 알림 표시/닫기.
+4. 기존 Desk Pet 애니메이션, 타이머, 한글 일정, 캐시/재연결 및 Calendar 알림 중복 방지.
+5. 상태 변경 보존은 후속 기능 또는 별도 테스트 코드에서 state 복사본의 EXP/HP/friendship을
+   수정한 뒤 `saveState()` 성공을 확인하고 재부팅하여 점검합니다. G1에는 테스트용 능력치 변경 UI를 넣지 않았습니다.
+6. NVS 손상/전원 차단 회귀는 별도 테스트 장치에서 게임 namespace에 한정해 수행합니다.
+   단일 슬롯 손상 시 다른 슬롯 로드, 양쪽 손상 시 초기 파트너 재생성,
+   저장 불가 시 SAVE ERROR와 기존 Calendar 데이터 보존을 확인합니다.
+
+다음 단계에서는 짧은 탐험의 런타임 상태와 안전한 저장 시점을 정의합니다.
+배틀/조우/포획/전체 도감/박스/진화/지역 콘텐츠는 G1에 포함하지 않습니다.

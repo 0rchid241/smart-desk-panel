@@ -1,4 +1,5 @@
 #include "game_app.h"
+#include "save_storage.h"
 #include "../hardware/displays.h"
 #include "../core/app_config.h"
 // 로컬 전용 포켓몬 애셋.
@@ -47,6 +48,31 @@ const int GAME_MENU_ITEM_COUNT =
 
 int gameMenuIndex =
   0;
+
+PokemonGame::GameSave gameSave;
+bool statusOpen = false;
+bool saveError = false;
+
+void initGameState() {
+  using GameSaveStorage::LoadResult;
+  const auto result = GameSaveStorage::load(gameSave);
+  if (result == LoadResult::Loaded) {
+    Serial.println("Game save loaded");
+    return;
+  }
+  gameSave = PokemonGame::GameSave{};
+  gameSave.state = PokemonGame::createNewGame();
+  if (result == LoadResult::Missing || result == LoadResult::Invalid) {
+    Serial.println(result == LoadResult::Missing ? "Game: first save" : "Game: invalid save fallback");
+    saveError = !GameSaveStorage::save(gameSave);
+  } else {
+    // Storage errors/newer versions keep their original bytes; use RAM fallback.
+    saveError = true;
+    Serial.println(result == LoadResult::UnsupportedVersion ?
+                   "Game: unsupported save version" : "Game: storage unavailable");
+  }
+  Serial.println(saveError ? "Game save failed (RAM only)" : "Game save created");
+}
 
 void drawPokemonGraphic(
   Adafruit_SSD1306& target
@@ -141,6 +167,8 @@ void init() {
 
   drawDeskPet();
 
+  initGameState();
+
 }
 
 void drawDeskPet() {
@@ -158,75 +186,42 @@ void drawGameGraphics() {
 }
 
 void drawGameTextScreen() {
-
-  Displays::game().clearDisplay();
-
-  Displays::game().setTextColor(
-    SSD1306_WHITE
-  );
-
-  Displays::game().setTextSize(1);
-
-  Displays::game().setCursor(
-    0,
-    0
-  );
-
-  Displays::game().print(
-    "POKEMON GAME"
-  );
-
-  Displays::game().drawLine(
-    0,
-    11,
-    127,
-    11,
-    SSD1306_WHITE
-  );
-
-  Displays::game().setCursor(
-    0,
-    17
-  );
-
-  Displays::game().print(
-    "Pikachu"
-  );
-
-  Displays::game().setCursor(
-    0,
-    30
-  );
-
-  Displays::game().print(
-    "> "
-  );
-
-  Displays::game().print(
-    GAME_MENU_ITEMS[
-      gameMenuIndex
-    ]
-  );
-
-  Displays::game().setCursor(
-    0,
-    45
-  );
-
-  Displays::game().print(
-    "L/R SELECT"
-  );
-
-  Displays::game().setCursor(
-    0,
-    56
-  );
-
-  Displays::game().print(
-    "OK ENTER"
-  );
-
-  Displays::game().display();
+  auto& oled = Displays::game();
+  oled.clearDisplay();
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  const auto* p = PokemonGame::partner(gameSave.state);
+  const auto* species = p ? PokemonGame::findSpecies(p->speciesId, p->formId) : nullptr;
+  oled.setCursor(0, 0);
+  oled.print(species ? species->name : "NO PARTNER");
+  oled.drawLine(0, 11, 127, 11, SSD1306_WHITE);
+  if (p && species) {
+    char line[24];
+    snprintf(line, sizeof(line), "Lv.%u HP %u/%u", static_cast<unsigned>(p->level),
+             static_cast<unsigned>(p->currentHp),
+             static_cast<unsigned>(PokemonGame::calculateStats(*p).hp));
+    oled.setCursor(0, 17);
+    oled.print(line);
+    if (statusOpen) {
+      oled.setCursor(0, 30);
+      oled.print("EXP ");
+      oled.print(static_cast<unsigned long>(p->exp));
+      oled.setCursor(0, 43);
+      oled.print("Friendship ");
+      oled.print(p->friendship);
+    }
+  }
+  if (!statusOpen) {
+    oled.setCursor(0, 30);
+    oled.print("> ");
+    oled.print(GAME_MENU_ITEMS[gameMenuIndex]);
+    oled.setCursor(0, 45);
+    oled.print("L/R SELECT");
+  }
+  oled.setCursor(0, 56);
+  oled.print(saveError ? (statusOpen ? "OK BACK / SAVE ERROR" : "OK ENTER / SAVE ERROR")
+                       : (statusOpen ? "OK BACK" : "OK ENTER"));
+  oled.display();
 }
 
 void updatePokemonAnimation(DeviceMode deviceMode) {
@@ -268,6 +263,13 @@ void updatePokemonAnimation(DeviceMode deviceMode) {
 }
 
 void handleButton(ButtonEvent button) {
+    if (statusOpen) {
+      if (button == BUTTON_OK) {
+        statusOpen = false;
+        drawGameTextScreen();
+      }
+      return;
+    }
     if (
       button ==
       BUTTON_LEFT
@@ -320,10 +322,31 @@ void handleButton(ButtonEvent button) {
         ]
       );
 
+      if (gameMenuIndex == 0) {
+        statusOpen = true;
+        drawGameTextScreen();
+      }
+
       return;
     }
 
 
     return;
+}
+
+const PokemonGame::GameState& state() { return gameSave.state; }
+
+bool saveState(const PokemonGame::GameState& next) {
+  PokemonGame::GameSave candidate = gameSave;
+  candidate.state = next;
+  if (!GameSaveStorage::save(candidate)) {
+    saveError = true;
+    Serial.println("Game save failed; current state kept");
+    return false;
+  }
+  gameSave = candidate;
+  saveError = false;
+  Serial.println("Game save succeeded");
+  return true;
 }
 } // namespace GameApp
