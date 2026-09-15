@@ -1,9 +1,13 @@
 #include "game_app.h"
+#include "encounter.h"
 #include "save_storage.h"
 #include "../hardware/displays.h"
 #include "../core/app_config.h"
 #include "../services/network_time.h"
 #include "../../hangul_renderer.h"
+
+#include <cstdio>
+
 // 로컬 전용 포켓몬 애셋.
 // 이 파일은 Git에 올리지 않아도 공개 저장소가 컴파일되도록 조건부 포함한다.
 #if __has_include("../../local_game_assets/pokemon/pikachu_idle_1bit.h")
@@ -13,9 +17,13 @@
   #define HAS_LOCAL_PIKACHU_ASSET 0
 #endif
 
+
 using namespace AppConfig;
+
+
 namespace GameApp {
 namespace {
+
 #if HAS_LOCAL_PIKACHU_ASSET
 
 const uint16_t PIKACHU_IDLE_FRAME_DURATION_MS[
@@ -48,53 +56,230 @@ const int GAME_MENU_ITEM_COUNT =
   sizeof(GAME_MENU_ITEMS) /
   sizeof(GAME_MENU_ITEMS[0]);
 
+
 int gameMenuIndex =
   0;
 
+
 PokemonGame::GameSave gameSave;
-enum class GameScreen { Home, Status, RegionSelect, Exploring, ExplorationComplete };
-GameScreen screen = GameScreen::Home;
-bool saveError = false;
-// Stop automatic flash retries after a failure; OK explicitly retries completion.
-bool completionSaveBlocked = false;
-int regionChoice = 0; // 0: the public fixture, 1: return Home (not a second region).
-const char* regionMessage = nullptr;
+
+
+enum class GameScreen {
+  Home,
+  Status,
+  RegionSelect,
+  Exploring,
+
+  // 정상 흐름에서는 곧바로 WildEncounter로 간다.
+  // 구버전 Complete 저장을 복구하거나 저장 실패를 재시도할 때만 사용한다.
+  ExplorationComplete,
+
+  WildEncounter
+};
+
+
+GameScreen screen =
+  GameScreen::Home;
+
+
+bool saveError =
+  false;
+
+
+// 탐험 완료 저장에 실패했을 때 매 loop마다 flash 재시도하지 않는다.
+// 사용자가 OK를 눌렀을 때만 다시 시도한다.
+bool completionSaveBlocked =
+  false;
+
+
+// 0: 공개 테스트 지역
+// 1: 돌아가기
+int regionChoice =
+  0;
+
+
+const char* regionMessage =
+  nullptr;
+
 
 void initGameState() {
   using GameSaveStorage::LoadResult;
-  const auto result = GameSaveStorage::load(gameSave);
-  if (result == LoadResult::Loaded) {
-    Serial.println("Game save loaded");
-    if (gameSave.saveVersion != PokemonGame::SAVE_VERSION) {
-      // Keep the loaded G1 state even if the migration write fails.
-      saveError = !GameSaveStorage::save(gameSave);
-      Serial.println(saveError ? "Game migration save failed; G1 state kept" : "Game save migrated to G2");
+
+  const auto result =
+    GameSaveStorage::load(
+      gameSave
+    );
+
+
+  if (
+    result ==
+    LoadResult::Loaded
+  ) {
+
+    Serial.println(
+      "Game save loaded"
+    );
+
+
+    if (
+      gameSave.saveVersion !=
+      PokemonGame::SAVE_VERSION
+    ) {
+
+      // 이전 버전 상태는 RAM에서 그대로 유지한다.
+      // 저장이 성공하면 현재 SAVE_VERSION으로 승격된다.
+      saveError =
+        !GameSaveStorage::save(
+          gameSave
+        );
+
+
+      Serial.println(
+        saveError
+          ? "Game migration save failed; loaded state kept"
+          : "Game save migrated to current version"
+      );
     }
+
     return;
   }
-  gameSave = PokemonGame::GameSave{};
-  gameSave.state = PokemonGame::createNewGame();
-  if (result == LoadResult::Missing || result == LoadResult::Invalid) {
-    Serial.println(result == LoadResult::Missing ? "Game: first save" : "Game: invalid save fallback");
-    saveError = !GameSaveStorage::save(gameSave);
+
+
+  gameSave =
+    PokemonGame::GameSave{};
+
+  gameSave.state =
+    PokemonGame::createNewGame();
+
+
+  if (
+    result == LoadResult::Missing ||
+    result == LoadResult::Invalid
+  ) {
+
+    Serial.println(
+      result == LoadResult::Missing
+        ? "Game: first save"
+        : "Game: invalid save fallback"
+    );
+
+    saveError =
+      !GameSaveStorage::save(
+        gameSave
+      );
+
   } else {
-    // Storage errors/newer versions keep their original bytes; use RAM fallback.
-    saveError = true;
-    Serial.println(result == LoadResult::UnsupportedVersion ?
-                   "Game: unsupported save version" : "Game: storage unavailable");
+
+    // Storage error / newer save는 기존 bytes를 덮어쓰지 않는다.
+    saveError =
+      true;
+
+    Serial.println(
+      result == LoadResult::UnsupportedVersion
+        ? "Game: unsupported save version"
+        : "Game: storage unavailable"
+    );
   }
-  Serial.println(saveError ? "Game save failed (RAM only)" : "Game save created");
+
+
+  Serial.println(
+    saveError
+      ? "Game save failed (RAM only)"
+      : "Game save created"
+  );
 }
 
-void drawPokemonGraphic(
-  Adafruit_SSD1306& target
-);
+
+bool prepareEncounterForCompletedExploration(
+  PokemonGame::GameState& state
+) {
+  using namespace PokemonGame;
+
+
+  if (
+    state.exploration.status !=
+    ExplorationStatus::Complete
+  ) {
+    return false;
+  }
+
+
+  // 이미 조우가 확정되어 있다면 다시 뽑지 않는다.
+  if (
+    state.encounter.status ==
+    EncounterStatus::Ready
+  ) {
+    return true;
+  }
+
+
+  if (
+    state.encounter.status !=
+    EncounterStatus::None
+  ) {
+    return false;
+  }
+
+
+  const uint32_t roll =
+    makeTestEncounterRoll(
+      state.exploration
+    );
+
+
+  return resolveTestEncounter(
+    state.encounter,
+    roll
+  );
+}
+
+
+bool persistEncounterForCompletedExploration() {
+  PokemonGame::GameState next =
+    gameSave.state;
+
+
+  if (
+    !prepareEncounterForCompletedExploration(
+      next
+    )
+  ) {
+
+    saveError =
+      true;
+
+    Serial.println(
+      "Game encounter preparation failed"
+    );
+
+    return false;
+  }
+
+
+  if (
+    !saveState(
+      next
+    )
+  ) {
+    return false;
+  }
+
+
+  screen =
+    GameScreen::WildEncounter;
+
+  completionSaveBlocked =
+    false;
+
+  return true;
+}
+
 
 void drawPokemonGraphic(
   Adafruit_SSD1306& target
 ) {
-
   target.clearDisplay();
+
 
 #if HAS_LOCAL_PIKACHU_ASSET
 
@@ -109,6 +294,7 @@ void drawPokemonGraphic(
       SCREEN_HEIGHT -
       PIKACHU_IDLE_FRAME_HEIGHT
     ) / 2;
+
 
   target.drawBitmap(
     x,
@@ -127,14 +313,18 @@ void drawPokemonGraphic(
     SSD1306_WHITE
   );
 
-  target.setTextSize(1);
-
-  target.setCursor(
-    0,
-    0
+  target.setTextSize(
+    1
   );
 
-  drawUtf8Text(target, 0, 0, "포켓몬");
+
+  drawUtf8Text(
+    target,
+    0,
+    0,
+    "포켓몬"
+  );
+
 
   target.drawLine(
     0,
@@ -144,133 +334,567 @@ void drawPokemonGraphic(
     SSD1306_WHITE
   );
 
-  target.setCursor(
+
+  drawUtf8Text(
+    target,
     12,
-    27
+    26,
+    "로컬 그림"
   );
 
-  drawUtf8Text(target, 12, 26, "로컬 그림");
 
-  target.setCursor(
+  drawUtf8Text(
+    target,
     21,
-    40
+    46,
+    "없음"
   );
-
-  drawUtf8Text(target, 21, 46, "없음");
 
 #endif
+
 
   target.display();
 }
+
+
+void drawWildEncounterText(
+  Adafruit_SSD1306& oled
+) {
+  using namespace PokemonGame;
+
+
+  const auto& encounter =
+    gameSave.state.encounter;
+
+
+  const auto* species =
+    findSpecies(
+      encounter.speciesId,
+      encounter.formId
+    );
+
+
+  if (
+    encounter.status !=
+      EncounterStatus::Ready ||
+    !species
+  ) {
+
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      "조우 오류"
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      48,
+      "OK"
+    );
+
+    return;
+  }
+
+
+  drawUtf8Text(
+    oled,
+    0,
+    0,
+    "야생의"
+  );
+
+
+  char encounterLine[48];
+
+  snprintf(
+    encounterLine,
+    sizeof(encounterLine),
+    "%s 등장!",
+    species->name
+  );
+
+
+  drawUtf8Text(
+    oled,
+    0,
+    24,
+    encounterLine
+  );
+
+
+  if (
+    saveError
+  ) {
+
+    drawUtf8Text(
+      oled,
+      0,
+      48,
+      "OK 재시도"
+    );
+
+    return;
+  }
+
+
+  char bottomLine[32];
+
+  snprintf(
+    bottomLine,
+    sizeof(bottomLine),
+    "Lv.%u        OK",
+    static_cast<unsigned>(
+      encounter.level
+    )
+  );
+
+
+  oled.setCursor(
+    0,
+    52
+  );
+
+  oled.print(
+    bottomLine
+  );
+}
+
 } // namespace
 
+
 void init() {
-  gameMenuIndex = 0;
-  regionChoice = 0;
-  regionMessage = nullptr;
-  saveError = false;
+  gameMenuIndex =
+    0;
+
+  regionChoice =
+    0;
+
+  regionMessage =
+    nullptr;
+
+  saveError =
+    false;
+
+
 #if HAS_LOCAL_PIKACHU_ASSET
-  pokemonIdleFrame = 0;
+
+  pokemonIdleFrame =
+    0;
+
   pokemonIdleFrameStartedAt =
     millis();
+
 #endif
+
 
   drawDeskPet();
 
-  initGameState();
-  completionSaveBlocked = false;
-  if (gameSave.state.exploration.status == PokemonGame::ExplorationStatus::Exploring)
-    screen = GameScreen::Exploring;
-  else if (gameSave.state.exploration.status == PokemonGame::ExplorationStatus::Complete)
-    screen = GameScreen::ExplorationComplete;
-  else
-    screen = GameScreen::Home;
 
+  initGameState();
+
+
+  completionSaveBlocked =
+    false;
+
+
+  using namespace PokemonGame;
+
+
+  // 조우가 이미 저장되어 있다면 재부팅 후에도 같은 조우를 바로 보여준다.
+  if (
+    gameSave.state.encounter.status ==
+    EncounterStatus::Ready
+  ) {
+
+    screen =
+      GameScreen::WildEncounter;
+
+    return;
+  }
+
+
+  if (
+    gameSave.state.exploration.status ==
+    ExplorationStatus::Exploring
+  ) {
+
+    screen =
+      GameScreen::Exploring;
+
+    return;
+  }
+
+
+  if (
+    gameSave.state.exploration.status ==
+    ExplorationStatus::Complete
+  ) {
+
+    // G2에서 Complete 상태로 저장된 뒤 G3로 올라온 경우도 여기서 처리한다.
+    screen =
+      GameScreen::ExplorationComplete;
+
+
+    if (
+      !persistEncounterForCompletedExploration()
+    ) {
+      completionSaveBlocked =
+        true;
+    }
+
+    return;
+  }
+
+
+  screen =
+    GameScreen::Home;
 }
+
 
 void update() {
   using namespace PokemonGame;
-  if (gameSave.state.exploration.status != ExplorationStatus::Exploring || completionSaveBlocked)
+
+
+  if (
+    gameSave.state.exploration.status !=
+      ExplorationStatus::Exploring ||
+    completionSaveBlocked
+  ) {
     return;
-  uint64_t epoch = 0;
-  if (!NetworkTime::getCurrentEpoch(epoch)) return;
-  GameState next = gameSave.state;
-  if (!updateExploration(next.exploration, epoch)) return;
-  if (saveState(next)) {
-    screen = GameScreen::ExplorationComplete;
+  }
+
+
+  uint64_t epoch =
+    0;
+
+
+  if (
+    !NetworkTime::getCurrentEpoch(
+      epoch
+    )
+  ) {
+    return;
+  }
+
+
+  GameState next =
+    gameSave.state;
+
+
+  if (
+    !updateExploration(
+      next.exploration,
+      epoch
+    )
+  ) {
+    return;
+  }
+
+
+  // 탐험 완료와 조우 결과를 하나의 GameState에서 확정한다.
+  // saveState가 성공해야만 현재 RAM state도 교체된다.
+  if (
+    !prepareEncounterForCompletedExploration(
+      next
+    )
+  ) {
+
+    saveError =
+      true;
+
+    completionSaveBlocked =
+      true;
+
+    Serial.println(
+      "Game encounter resolve failed"
+    );
+
+    return;
+  }
+
+
+  if (
+    saveState(
+      next
+    )
+  ) {
+
+    screen =
+      GameScreen::WildEncounter;
+
   } else {
-    completionSaveBlocked = true;
+
+    completionSaveBlocked =
+      true;
   }
 }
 
-void drawDeskPet() {
 
+void drawDeskPet() {
   drawPokemonGraphic(
     Displays::game()
   );
 }
 
-void drawGameGraphics() {
 
+void drawGameGraphics() {
+  // G3-A에서는 야생 포켓몬 전용 그래픽 asset을 아직 연결하지 않는다.
+  // G3-B에서 species별 wild graphic/fallback을 추가한다.
   drawPokemonGraphic(
     Displays::desk()
   );
 }
 
+
 void drawGameTextScreen() {
-  auto& oled = Displays::game();
+  auto& oled =
+    Displays::game();
+
 
   oled.clearDisplay();
-  oled.setTextColor(SSD1306_WHITE);
-  oled.setTextSize(1);
 
-  // Exploration views use the existing 16px Hangul renderer at three row heights.
-  if (screen == GameScreen::RegionSelect) {
-    drawUtf8Text(oled, 0, 0, "지역 선택");
-    if (regionMessage) {
-      drawScrollingUtf8Text(oled, 0, 24, 128, regionMessage);
+  oled.setTextColor(
+    SSD1306_WHITE
+  );
+
+  oled.setTextSize(
+    1
+  );
+
+
+  if (
+    screen ==
+    GameScreen::RegionSelect
+  ) {
+
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      "지역 선택"
+    );
+
+
+    if (
+      regionMessage
+    ) {
+
+      drawScrollingUtf8Text(
+        oled,
+        0,
+        24,
+        128,
+        regionMessage
+      );
+
     } else {
-      oled.setCursor(0, 28);
-      oled.print(">");
-      drawUtf8Text(oled, 12, 24, regionChoice == 0 ? "테스트 초원" : "돌아가기");
+
+      oled.setCursor(
+        0,
+        28
+      );
+
+      oled.print(
+        ">"
+      );
+
+
+      drawUtf8Text(
+        oled,
+        12,
+        24,
+        regionChoice == 0
+          ? "테스트 초원"
+          : "돌아가기"
+      );
     }
-    drawUtf8Text(oled, 0, 48, "L/R  OK 선택");
+
+
+    drawUtf8Text(
+      oled,
+      0,
+      48,
+      "L/R  OK 선택"
+    );
+
+
     oled.display();
+
     return;
   }
-  if (screen == GameScreen::Exploring) {
-    drawUtf8Text(oled, 0, 0, "테스트 초원");
-    uint64_t epoch = 0;
-    if (completionSaveBlocked) {
-      drawUtf8Text(oled, 0, 24, "저장 오류");
-      drawUtf8Text(oled, 0, 48, "OK 재시도");
-    } else if (!NetworkTime::getCurrentEpoch(epoch) ||
-               epoch < gameSave.state.exploration.startedAtEpoch) {
-      drawUtf8Text(oled, 0, 24, "시간 확인 중...");
+
+
+  if (
+    screen ==
+    GameScreen::Exploring
+  ) {
+
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      "테스트 초원"
+    );
+
+
+    uint64_t epoch =
+      0;
+
+
+    if (
+      completionSaveBlocked
+    ) {
+
+      drawUtf8Text(
+        oled,
+        0,
+        24,
+        "저장 오류"
+      );
+
+      drawUtf8Text(
+        oled,
+        0,
+        48,
+        "OK 재시도"
+      );
+
+    } else if (
+      !NetworkTime::getCurrentEpoch(
+        epoch
+      ) ||
+      epoch <
+        gameSave.state.exploration.startedAtEpoch
+    ) {
+
+      drawUtf8Text(
+        oled,
+        0,
+        24,
+        "시간 확인 중..."
+      );
+
     } else {
-      drawUtf8Text(oled, 0, 24, "탐험 중...");
-      const uint32_t remaining = PokemonGame::remainingSeconds(gameSave.state.exploration, epoch);
+
+      drawUtf8Text(
+        oled,
+        0,
+        24,
+        "탐험 중..."
+      );
+
+
+      const uint32_t remaining =
+        PokemonGame::remainingSeconds(
+          gameSave.state.exploration,
+          epoch
+        );
+
+
       char remainingText[40];
-      if (remaining < 60)
-        snprintf(remainingText, sizeof(remainingText), "남은 %lu초", static_cast<unsigned long>(remaining));
-      else
-        snprintf(remainingText, sizeof(remainingText), "남은 %lu:%02lu",
-                 static_cast<unsigned long>(remaining / 60), static_cast<unsigned long>(remaining % 60));
-      drawUtf8Text(oled, 0, 48, remainingText);
+
+
+      if (
+        remaining < 60
+      ) {
+
+        snprintf(
+          remainingText,
+          sizeof(remainingText),
+          "남은 %lu초",
+          static_cast<unsigned long>(
+            remaining
+          )
+        );
+
+      } else {
+
+        snprintf(
+          remainingText,
+          sizeof(remainingText),
+          "남은 %lu:%02lu",
+          static_cast<unsigned long>(
+            remaining / 60
+          ),
+          static_cast<unsigned long>(
+            remaining % 60
+          )
+        );
+      }
+
+
+      drawUtf8Text(
+        oled,
+        0,
+        48,
+        remainingText
+      );
     }
+
+
     oled.display();
+
     return;
   }
-  if (screen == GameScreen::ExplorationComplete) {
-    drawUtf8Text(oled, 0, 0, "탐험 완료!");
-    drawUtf8Text(oled, 0, 24, saveError ? "저장 오류" : "탐험을 마쳤다.");
-    drawUtf8Text(oled, 0, 48, saveError ? "OK 재시도" : "OK 확인");
+
+
+  if (
+    screen ==
+    GameScreen::ExplorationComplete
+  ) {
+
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      "탐험 완료!"
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      24,
+      saveError
+        ? "저장 오류"
+        : "조우 준비 중"
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      48,
+      "OK 재시도"
+    );
+
+
     oled.display();
+
     return;
   }
+
+
+  if (
+    screen ==
+    GameScreen::WildEncounter
+  ) {
+
+    drawWildEncounterText(
+      oled
+    );
+
+    oled.display();
+
+    return;
+  }
+
 
   const auto* p =
-    PokemonGame::partner(gameSave.state);
+    PokemonGame::partner(
+      gameSave.state
+    );
+
 
   const auto* species =
     p
@@ -281,8 +905,12 @@ void drawGameTextScreen() {
       : nullptr;
 
 
-  // 파트너를 찾지 못한 경우
-  if (!p || !species) {
+  // 파트너를 찾지 못한 경우.
+  if (
+    !p ||
+    !species
+  ) {
+
     drawUtf8Text(
       oled,
       0,
@@ -291,11 +919,12 @@ void drawGameTextScreen() {
     );
 
     oled.display();
+
     return;
   }
 
 
-  // 포켓몬 이름
+  // 포켓몬 이름.
   drawUtf8Text(
     oled,
     0,
@@ -304,37 +933,52 @@ void drawGameTextScreen() {
   );
 
 
-  // Lv / HP
+  // Lv / HP.
   char line[32];
+
 
   snprintf(
     line,
     sizeof(line),
     "Lv.%u  HP %u/%u",
-    static_cast<unsigned>(p->level),
-    static_cast<unsigned>(p->currentHp),
     static_cast<unsigned>(
-      PokemonGame::calculateStats(*p).hp
+      p->level
+    ),
+    static_cast<unsigned>(
+      p->currentHp
+    ),
+    static_cast<unsigned>(
+      PokemonGame::calculateStats(
+        *p
+      ).hp
     )
   );
+
 
   oled.setCursor(
     0,
     19
   );
 
-  oled.print(line);
+  oled.print(
+    line
+  );
 
 
-  // 상태 화면
-  if (screen == GameScreen::Status) {
+  // 상태 화면.
+  if (
+    screen ==
+    GameScreen::Status
+  ) {
 
     oled.setCursor(
       0,
       30
     );
 
-    oled.print("EXP ");
+    oled.print(
+      "EXP "
+    );
 
     oled.print(
       static_cast<unsigned long>(
@@ -343,7 +987,9 @@ void drawGameTextScreen() {
     );
 
 
-    if (saveError) {
+    if (
+      saveError
+    ) {
 
       drawUtf8Text(
         oled,
@@ -363,6 +1009,7 @@ void drawGameTextScreen() {
         )
       );
 
+
       drawUtf8Text(
         oled,
         0,
@@ -372,31 +1019,36 @@ void drawGameTextScreen() {
     }
 
 
-    // OK = 뒤로가기
     oled.setCursor(
       0,
       56
     );
 
-    oled.print("OK");
-
-  }
-
-  // 게임 메인 메뉴
-  else {
-
-    oled.setCursor(
-      0,
-      saveError ? 34 : 38
+    oled.print(
+      "OK"
     );
 
-    oled.print(">");
+  } else {
+
+    // 게임 메인 메뉴.
+    oled.setCursor(
+      0,
+      saveError
+        ? 34
+        : 38
+    );
+
+    oled.print(
+      ">"
+    );
 
 
     drawUtf8Text(
       oled,
       12,
-      saveError ? 30 : 34,
+      saveError
+        ? 30
+        : 34,
       GAME_MENU_ITEMS[
         gameMenuIndex
       ]
@@ -408,10 +1060,20 @@ void drawGameTextScreen() {
       56
     );
 
-    if (saveError) {
-      // Draw above the bottom edge to preserve the full 16px glyph height.
-      drawUtf8Text(oled, 0, 48, "저장 오류");
+
+    if (
+      saveError
+    ) {
+
+      drawUtf8Text(
+        oled,
+        0,
+        48,
+        "저장 오류"
+      );
+
     } else {
+
       oled.print(
         "L/R          OK"
       );
@@ -422,12 +1084,16 @@ void drawGameTextScreen() {
   oled.display();
 }
 
-void updatePokemonAnimation(DeviceMode deviceMode) {
+
+void updatePokemonAnimation(
+  DeviceMode deviceMode
+) {
 
 #if HAS_LOCAL_PIKACHU_ASSET
 
   unsigned long now =
     millis();
+
 
   if (
     now -
@@ -439,20 +1105,25 @@ void updatePokemonAnimation(DeviceMode deviceMode) {
 
     pokemonIdleFrame =
       (
-        pokemonIdleFrame + 1
+        pokemonIdleFrame +
+        1
       ) %
       PIKACHU_IDLE_FRAME_COUNT;
 
+
     pokemonIdleFrameStartedAt =
       now;
+
 
     if (
       deviceMode ==
       MODE_DESK
     ) {
+
       drawDeskPet();
 
     } else {
+
       drawGameGraphics();
     }
   }
@@ -460,141 +1131,374 @@ void updatePokemonAnimation(DeviceMode deviceMode) {
 #endif
 }
 
-void handleButton(ButtonEvent button) {
-    if (screen == GameScreen::RegionSelect) {
-      if (button == BUTTON_LEFT || button == BUTTON_RIGHT) {
-        regionChoice = (regionChoice + 1) % 2;
-        regionMessage = nullptr;
-      } else if (button == BUTTON_OK) {
-        if (regionChoice == 1) {
-          screen = GameScreen::Home;
-          regionMessage = nullptr;
+
+void handleButton(
+  ButtonEvent button
+) {
+
+  if (
+    screen ==
+    GameScreen::RegionSelect
+  ) {
+
+    if (
+      button == BUTTON_LEFT ||
+      button == BUTTON_RIGHT
+    ) {
+
+      regionChoice =
+        (regionChoice + 1) % 2;
+
+      regionMessage =
+        nullptr;
+
+    } else if (
+      button ==
+      BUTTON_OK
+    ) {
+
+      if (
+        regionChoice ==
+        1
+      ) {
+
+        screen =
+          GameScreen::Home;
+
+        regionMessage =
+          nullptr;
+
+      } else {
+
+        uint64_t epoch =
+          0;
+
+
+        if (
+          !NetworkTime::getCurrentEpoch(
+            epoch
+          )
+        ) {
+
+          regionMessage =
+            "시간 동기화 중...";
+
         } else {
-          uint64_t epoch = 0;
-          if (!NetworkTime::getCurrentEpoch(epoch)) {
-            regionMessage = "시간 동기화 중...";
+
+          auto next =
+            gameSave.state;
+
+
+          if (
+            next.encounter.status !=
+            PokemonGame::EncounterStatus::None
+          ) {
+
+            regionMessage =
+              "조우 확인 필요";
+
+          } else if (
+            PokemonGame::startExploration(
+              next.exploration,
+              PokemonGame::TEST_REGION_ID,
+              epoch,
+              PokemonGame::TEST_EXPLORATION_SECONDS
+            ) &&
+            saveState(
+              next
+            )
+          ) {
+
+            screen =
+              GameScreen::Exploring;
+
+            completionSaveBlocked =
+              false;
+
+            regionMessage =
+              nullptr;
+
           } else {
-            auto next = gameSave.state;
-            if (PokemonGame::startExploration(next.exploration, PokemonGame::TEST_REGION_ID,
-                                             epoch, PokemonGame::TEST_EXPLORATION_SECONDS) && saveState(next)) {
-              screen = GameScreen::Exploring;
-              completionSaveBlocked = false;
-              regionMessage = nullptr;
-            } else {
-              regionMessage = "저장 오류";
-            }
+
+            regionMessage =
+              "저장 오류";
           }
         }
       }
-      drawGameTextScreen();
-      return;
-    }
-    if (screen == GameScreen::Exploring) {
-      if (button == BUTTON_OK && completionSaveBlocked) {
-        completionSaveBlocked = false;
-        update();
-        drawGameTextScreen();
-      }
-      return;
-    }
-    if (screen == GameScreen::ExplorationComplete) {
-      if (button == BUTTON_OK) {
-        auto next = gameSave.state;
-        if (PokemonGame::acknowledgeExploration(next.exploration) && saveState(next))
-          screen = GameScreen::Home;
-        drawGameTextScreen();
-      }
-      return;
-    }
-    if (screen == GameScreen::Status) {
-      if (button == BUTTON_OK) {
-        screen = GameScreen::Home;
-        drawGameTextScreen();
-      }
-      return;
-    }
-    if (
-      button ==
-      BUTTON_LEFT
-    ) {
-
-      gameMenuIndex =
-        (
-          gameMenuIndex -
-          1 +
-          GAME_MENU_ITEM_COUNT
-        ) %
-        GAME_MENU_ITEM_COUNT;
-
-      drawGameTextScreen();
-
-      return;
     }
 
+
+    drawGameTextScreen();
+
+    return;
+  }
+
+
+  if (
+    screen ==
+    GameScreen::Exploring
+  ) {
 
     if (
-      button ==
-      BUTTON_RIGHT
+      button == BUTTON_OK &&
+      completionSaveBlocked
     ) {
 
-      gameMenuIndex =
-        (
-          gameMenuIndex +
-          1
-        ) %
-        GAME_MENU_ITEM_COUNT;
+      completionSaveBlocked =
+        false;
+
+      update();
 
       drawGameTextScreen();
-
-      return;
     }
 
+    return;
+  }
+
+
+  if (
+    screen ==
+    GameScreen::ExplorationComplete
+  ) {
 
     if (
       button ==
       BUTTON_OK
     ) {
 
-      Serial.print(
-        "Game menu selected: "
-      );
+      completionSaveBlocked =
+        false;
 
-      Serial.println(
-        GAME_MENU_ITEMS[
-          gameMenuIndex
-        ]
-      );
 
-      if (gameMenuIndex == 0) {
-        screen = GameScreen::Status;
-        drawGameTextScreen();
-      } else if (gameMenuIndex == 1) {
-        regionChoice = 0;
-        regionMessage = nullptr;
-        screen = GameScreen::RegionSelect;
-        drawGameTextScreen();
+      if (
+        !persistEncounterForCompletedExploration()
+      ) {
+        completionSaveBlocked =
+          true;
       }
 
-      return;
+
+      drawGameTextScreen();
+    }
+
+    return;
+  }
+
+
+  if (
+    screen ==
+    GameScreen::WildEncounter
+  ) {
+
+    if (
+      button ==
+      BUTTON_OK
+    ) {
+
+      auto next =
+        gameSave.state;
+
+
+      bool explorationOk =
+        true;
+
+
+      if (
+        next.exploration.status ==
+        PokemonGame::ExplorationStatus::Complete
+      ) {
+
+        explorationOk =
+          PokemonGame::acknowledgeExploration(
+            next.exploration
+          );
+      }
+
+
+      if (
+        explorationOk &&
+        next.encounter.status ==
+          PokemonGame::EncounterStatus::Ready
+      ) {
+
+        PokemonGame::clearEncounter(
+          next.encounter
+        );
+
+
+        if (
+          saveState(
+            next
+          )
+        ) {
+
+          screen =
+            GameScreen::Home;
+        }
+      }
+
+
+      drawGameTextScreen();
+    }
+
+    return;
+  }
+
+
+  if (
+    screen ==
+    GameScreen::Status
+  ) {
+
+    if (
+      button ==
+      BUTTON_OK
+    ) {
+
+      screen =
+        GameScreen::Home;
+
+      drawGameTextScreen();
+    }
+
+    return;
+  }
+
+
+  if (
+    button ==
+    BUTTON_LEFT
+  ) {
+
+    gameMenuIndex =
+      (
+        gameMenuIndex -
+        1 +
+        GAME_MENU_ITEM_COUNT
+      ) %
+      GAME_MENU_ITEM_COUNT;
+
+
+    drawGameTextScreen();
+
+    return;
+  }
+
+
+  if (
+    button ==
+    BUTTON_RIGHT
+  ) {
+
+    gameMenuIndex =
+      (
+        gameMenuIndex +
+        1
+      ) %
+      GAME_MENU_ITEM_COUNT;
+
+
+    drawGameTextScreen();
+
+    return;
+  }
+
+
+  if (
+    button ==
+    BUTTON_OK
+  ) {
+
+    Serial.print(
+      "Game menu selected: "
+    );
+
+    Serial.println(
+      GAME_MENU_ITEMS[
+        gameMenuIndex
+      ]
+    );
+
+
+    if (
+      gameMenuIndex ==
+      0
+    ) {
+
+      screen =
+        GameScreen::Status;
+
+      drawGameTextScreen();
+
+    } else if (
+      gameMenuIndex ==
+      1
+    ) {
+
+      regionChoice =
+        0;
+
+      regionMessage =
+        nullptr;
+
+      screen =
+        GameScreen::RegionSelect;
+
+      drawGameTextScreen();
     }
 
 
     return;
+  }
 }
 
-const PokemonGame::GameState& state() { return gameSave.state; }
 
-bool saveState(const PokemonGame::GameState& next) {
-  PokemonGame::GameSave candidate = gameSave;
-  candidate.state = next;
-  if (!GameSaveStorage::save(candidate)) {
-    saveError = true;
-    Serial.println("Game save failed; current state kept");
+const PokemonGame::GameState& state() {
+  return gameSave.state;
+}
+
+
+bool saveState(
+  const PokemonGame::GameState& next
+) {
+  PokemonGame::GameSave candidate =
+    gameSave;
+
+
+  candidate.state =
+    next;
+
+
+  if (
+    !GameSaveStorage::save(
+      candidate
+    )
+  ) {
+
+    saveError =
+      true;
+
+    Serial.println(
+      "Game save failed; current state kept"
+    );
+
     return false;
   }
-  gameSave = candidate;
-  saveError = false;
-  Serial.println("Game save succeeded");
+
+
+  gameSave =
+    candidate;
+
+  saveError =
+    false;
+
+
+  Serial.println(
+    "Game save succeeded"
+  );
+
+
   return true;
 }
+
 } // namespace GameApp
