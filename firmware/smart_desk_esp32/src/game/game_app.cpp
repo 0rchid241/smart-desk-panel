@@ -2,6 +2,7 @@
 #include "save_storage.h"
 #include "../hardware/displays.h"
 #include "../core/app_config.h"
+#include "../../hangul_renderer.h"
 // 로컬 전용 포켓몬 애셋.
 // 이 파일은 Git에 올리지 않아도 공개 저장소가 컴파일되도록 조건부 포함한다.
 #if __has_include("../../local_game_assets/pokemon/pikachu_idle_1bit.h")
@@ -37,9 +38,9 @@ unsigned long pokemonIdleFrameStartedAt =
 
 
 const char* GAME_MENU_ITEMS[] = {
-  "STATUS",
-  "EXPLORE",
-  "POKEDEX"
+  "상태",
+  "탐험",
+  "도감"
 };
 
 const int GAME_MENU_ITEM_COUNT =
@@ -187,40 +188,162 @@ void drawGameGraphics() {
 
 void drawGameTextScreen() {
   auto& oled = Displays::game();
+
   oled.clearDisplay();
   oled.setTextColor(SSD1306_WHITE);
   oled.setTextSize(1);
-  const auto* p = PokemonGame::partner(gameSave.state);
-  const auto* species = p ? PokemonGame::findSpecies(p->speciesId, p->formId) : nullptr;
-  oled.setCursor(0, 0);
-  oled.print(species ? species->name : "NO PARTNER");
-  oled.drawLine(0, 11, 127, 11, SSD1306_WHITE);
-  if (p && species) {
-    char line[24];
-    snprintf(line, sizeof(line), "Lv.%u HP %u/%u", static_cast<unsigned>(p->level),
-             static_cast<unsigned>(p->currentHp),
-             static_cast<unsigned>(PokemonGame::calculateStats(*p).hp));
-    oled.setCursor(0, 17);
-    oled.print(line);
-    if (statusOpen) {
-      oled.setCursor(0, 30);
-      oled.print("EXP ");
-      oled.print(static_cast<unsigned long>(p->exp));
-      oled.setCursor(0, 43);
-      oled.print("Friendship ");
-      oled.print(p->friendship);
+
+  const auto* p =
+    PokemonGame::partner(gameSave.state);
+
+  const auto* species =
+    p
+      ? PokemonGame::findSpecies(
+          p->speciesId,
+          p->formId
+        )
+      : nullptr;
+
+
+  // 파트너를 찾지 못한 경우
+  if (!p || !species) {
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      "파트너 없음"
+    );
+
+    oled.display();
+    return;
+  }
+
+
+  // 포켓몬 이름
+  drawUtf8Text(
+    oled,
+    0,
+    0,
+    species->name
+  );
+
+
+  // Lv / HP
+  char line[32];
+
+  snprintf(
+    line,
+    sizeof(line),
+    "Lv.%u  HP %u/%u",
+    static_cast<unsigned>(p->level),
+    static_cast<unsigned>(p->currentHp),
+    static_cast<unsigned>(
+      PokemonGame::calculateStats(*p).hp
+    )
+  );
+
+  oled.setCursor(
+    0,
+    19
+  );
+
+  oled.print(line);
+
+
+  // 상태 화면
+  if (statusOpen) {
+
+    oled.setCursor(
+      0,
+      30
+    );
+
+    oled.print("EXP ");
+
+    oled.print(
+      static_cast<unsigned long>(
+        p->exp
+      )
+    );
+
+
+    if (saveError) {
+
+      drawUtf8Text(
+        oled,
+        0,
+        40,
+        "저장 오류"
+      );
+
+    } else {
+
+      snprintf(
+        line,
+        sizeof(line),
+        "친밀도 %u",
+        static_cast<unsigned>(
+          p->friendship
+        )
+      );
+
+      drawUtf8Text(
+        oled,
+        0,
+        40,
+        line
+      );
+    }
+
+
+    // OK = 뒤로가기
+    oled.setCursor(
+      0,
+      56
+    );
+
+    oled.print("OK");
+
+  }
+
+  // 게임 메인 메뉴
+  else {
+
+    oled.setCursor(
+      0,
+      38
+    );
+
+    oled.print(">");
+
+
+    drawUtf8Text(
+      oled,
+      12,
+      34,
+      GAME_MENU_ITEMS[
+        gameMenuIndex
+      ]
+    );
+
+
+    oled.setCursor(
+      0,
+      56
+    );
+
+    if (saveError) {
+      oled.print(
+        "SAVE ERR"
+      );
+    } else {
+      oled.print(
+        "L/R          OK"
+      );
     }
   }
-  if (!statusOpen) {
-    oled.setCursor(0, 30);
-    oled.print("> ");
-    oled.print(GAME_MENU_ITEMS[gameMenuIndex]);
-    oled.setCursor(0, 45);
-    oled.print("L/R SELECT");
-  }
-  oled.setCursor(0, 56);
-  oled.print(saveError ? (statusOpen ? "OK BACK / SAVE ERROR" : "OK ENTER / SAVE ERROR")
-                       : (statusOpen ? "OK BACK" : "OK ENTER"));
+
+
   oled.display();
 }
 

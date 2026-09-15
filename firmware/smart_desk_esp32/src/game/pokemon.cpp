@@ -2,7 +2,7 @@
 
 namespace PokemonGame {
 namespace {
-const PokemonSpecies pikachu = {25, "PIKACHU", {35, 55, 40, 50, 50, 90}};
+const PokemonSpecies pikachu = {25, "피카츄", {35, 55, 40, 50, 50, 90}};
 uint16_t stat(uint16_t base, uint8_t level) {
   return static_cast<uint16_t>((2u * base * level) / 100u + 5u);
 }
