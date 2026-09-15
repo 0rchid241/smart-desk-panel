@@ -1,6 +1,7 @@
 #pragma once
 #include "pokemon.h"
 #include "exploration.h"
+#include "encounter.h"
 #include <cstddef>
 
 namespace PokemonGame {
@@ -29,6 +30,7 @@ struct GameState {
   PartyState party;
   PokedexState pokedex;
   ExplorationSession exploration;
+  EncounterState encounter;
 };
 
 bool dexContains(const uint8_t* bits, SpeciesId speciesId);

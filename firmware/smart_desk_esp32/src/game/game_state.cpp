@@ -42,6 +42,7 @@ GameState createNewGame() {
 
 bool isValidState(const GameState& state) {
   if (!isValidExploration(state.exploration)) return false;
+  if (!isValidEncounter(state.encounter)) return false;
   if (state.party.count == 0 || state.party.count > PARTY_CAPACITY ||
       !state.progress.nextInstanceId || state.progress.ballTier > 2 ||
       !partner(state)) return false;

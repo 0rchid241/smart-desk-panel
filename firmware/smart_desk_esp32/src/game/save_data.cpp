@@ -27,9 +27,12 @@ uint32_t checksum(const uint8_t* data, size_t length) {
 bool serialize(const GameSave& save, uint8_t* output, size_t capacity, size_t& written) {
   written = 0;
   if (!output || save.saveVersion != SAVE_VERSION || !isValidState(save.state)) return false;
-  const size_t size = SAVE_HEADER_SIZE + 15 +
-                      save.state.party.count * POKEMON_RECORD_SIZE + 3 * POKEDEX_BYTES +
-                      EXPLORATION_RECORD_SIZE;
+  const size_t size =
+    SAVE_HEADER_SIZE + 15 +
+    save.state.party.count * POKEMON_RECORD_SIZE +
+    3 * POKEDEX_BYTES +
+    EXPLORATION_RECORD_SIZE +
+    ENCOUNTER_RECORD_SIZE;
   if (capacity < size) return false;
   uint8_t* p = output;
   for (char c : {'P', 'K', 'D', 'G'}) *p++ = static_cast<uint8_t>(c);
@@ -59,6 +62,13 @@ bool serialize(const GameSave& save, uint8_t* output, size_t capacity, size_t& w
   put(p, static_cast<uint32_t>(session.startedAtEpoch), 4);
   put(p, static_cast<uint32_t>(session.startedAtEpoch >> 32), 4);
   put(p, session.durationSeconds, 4);
+  const auto& encounter = save.state.encounter;
+  put(p, static_cast<uint8_t>(encounter.status), 1);
+  put(p, encounter.speciesId, 2);
+  put(p, encounter.formId, 1);
+  put(p, encounter.level, 1);
+  put(p, static_cast<uint8_t>(encounter.gender), 1);
+  put(p, encounter.shiny ? 1u : 0u, 1);
   p = output + 14;
   put(p, checksum(output, size), 4);
   written = size;
@@ -76,9 +86,19 @@ DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output) 
   const uint32_t crc = get(p, 4);
   if (payloadLength != length - SAVE_HEADER_SIZE || crc != checksum(input, length))
     return DecodeResult::Invalid;
-  if (candidate.saveVersion != 1 && candidate.saveVersion != SAVE_VERSION)
+  if (
+    candidate.saveVersion != 1 &&
+    candidate.saveVersion != 2 &&
+    candidate.saveVersion != SAVE_VERSION)
     return DecodeResult::UnsupportedVersion;
-  const size_t explorationBytes = candidate.saveVersion == 1 ? 0 : EXPLORATION_RECORD_SIZE;
+  const size_t explorationBytes =
+    candidate.saveVersion >= 2
+    ? EXPLORATION_RECORD_SIZE
+    : 0;
+  const size_t encounterBytes =
+    candidate.saveVersion >= 3
+    ? ENCOUNTER_RECORD_SIZE
+    : 0;
   if (length < SAVE_HEADER_SIZE + 15 + 3 * POKEDEX_BYTES || length > SAVE_MAX_SIZE)
     return DecodeResult::Invalid;
   auto& progress = candidate.state.progress;
@@ -89,7 +109,7 @@ DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output) 
   candidate.state.party.count = static_cast<uint8_t>(get(p, 1));
   if (candidate.state.party.count > PARTY_CAPACITY ||
       length != SAVE_HEADER_SIZE + 15 + candidate.state.party.count * POKEMON_RECORD_SIZE +
-                3 * POKEDEX_BYTES + explorationBytes) return DecodeResult::Invalid;
+                3 * POKEDEX_BYTES + explorationBytes + encounterBytes) return DecodeResult::Invalid;
   for (uint8_t i = 0; i < candidate.state.party.count; ++i) {
     auto& m = candidate.state.party.members[i];
     m.instanceId = get(p, 4); m.speciesId = static_cast<SpeciesId>(get(p, 2));
@@ -104,13 +124,22 @@ DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output) 
   for (uint8_t* bits : {candidate.state.pokedex.seen, candidate.state.pokedex.caught,
                        candidate.state.pokedex.shinyCaught})
     for (size_t i = 0; i < POKEDEX_BYTES; ++i) bits[i] = *p++;
-  if (candidate.saveVersion == SAVE_VERSION) {
+  if (candidate.saveVersion >= 2) {
     auto& session = candidate.state.exploration;
     session.status = static_cast<ExplorationStatus>(get(p, 1));
     session.regionId = static_cast<uint16_t>(get(p, 2));
     session.startedAtEpoch = get(p, 4);
     session.startedAtEpoch |= static_cast<uint64_t>(get(p, 4)) << 32;
     session.durationSeconds = get(p, 4);
+  }
+  if (candidate.saveVersion >= 3) {
+    auto& encounter = candidate.state.encounter;
+    encounter.status = static_cast<EncounterStatus>(get(p, 1));
+    encounter.speciesId = static_cast<SpeciesId>(get(p, 2));
+    encounter.formId = static_cast<FormId>(get(p, 1));
+    encounter.level = static_cast<uint8_t>(get(p, 1));
+    encounter.gender = static_cast<Gender>(get(p, 1));
+    encounter.shiny = get(p, 1) != 0;
   }
   if (!isValidState(candidate.state)) return DecodeResult::Invalid;
   output = candidate;

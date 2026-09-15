@@ -2,14 +2,51 @@
 
 namespace PokemonGame {
 namespace {
-const PokemonSpecies pikachu = {25, "피카츄", {35, 55, 40, 50, 50, 90}};
+
+const PokemonSpecies pidgey = {
+  16,
+  "구구",
+  {40, 45, 40, 35, 35, 56}
+};
+
+const PokemonSpecies rattata = {
+  19,
+  "꼬렛",
+  {30, 56, 35, 25, 35, 72}
+};
+
+const PokemonSpecies pikachu = {
+  25,
+  "피카츄",
+  {35, 55, 40, 50, 50, 90}
+};
+
 uint16_t stat(uint16_t base, uint8_t level) {
   return static_cast<uint16_t>((2u * base * level) / 100u + 5u);
 }
 }
 
-const PokemonSpecies* findSpecies(SpeciesId speciesId, FormId formId) {
-  return speciesId == 25 && formId == 0 ? &pikachu : nullptr;
+const PokemonSpecies* findSpecies(
+  SpeciesId speciesId,
+  FormId formId
+) {
+  if (formId != 0) {
+    return nullptr;
+  }
+
+  switch (speciesId) {
+    case 16:
+      return &pidgey;
+
+    case 19:
+      return &rattata;
+
+    case 25:
+      return &pikachu;
+
+    default:
+      return nullptr;
+  }
 }
 
 Stats calculateStats(const PokemonInstance& pokemon) {

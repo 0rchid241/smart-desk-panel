@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdio>
 #include <limits>
+#include <vector>
 
 using namespace PokemonGame;
 using GameSaveStorage::LoadResult;
@@ -65,7 +66,7 @@ void codecTests() {
   save.state.progress.playTimeSeconds = 987654;
   auto bytes = encode(save);
   assert(bytes.size() == SAVE_MAX_SIZE);
-  assert(bytes[0] == 'P' && bytes[4] == 2 && bytes[5] == 0);
+  assert(bytes[0] == 'P' && bytes[4] == 3 && bytes[5] == 0);
   assert(bytes[6] == 0x78 && bytes[7] == 0x56 && bytes[8] == 0x34 && bytes[9] == 0x12);
   GameSave decoded;
   assert(deserialize(bytes.data(), bytes.size(), decoded) == DecodeResult::Ok);
@@ -86,7 +87,7 @@ void codecTests() {
   }
   auto broken = bytes; broken.push_back(0);
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::Invalid);
-  broken = bytes; broken[4] = 3; updateCrc(broken);
+  broken = bytes; broken[4] = 4; updateCrc(broken);
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::UnsupportedVersion);
   broken = bytes; broken[32] = 4; updateCrc(broken); // party count
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::Invalid);
@@ -147,7 +148,7 @@ void storageTests() {
   assert(GameSaveStorage::save(rebooted));
   assert(GameSaveStorage::load(rebooted) == LoadResult::Loaded);
 
-  auto future = encode(rebooted); future[4] = 3; updateCrc(future);
+  auto future = encode(rebooted); future[4] = 4; updateCrc(future);
   FakeNvs::data["pokemon_g1/save_b"] = future;
   const auto before = FakeNvs::data;
   assert(GameSaveStorage::load(rebooted) == LoadResult::UnsupportedVersion);
@@ -198,6 +199,26 @@ std::vector<uint8_t> legacyRecord(const GameSave& save) {
   return bytes;
 }
 
+// Frozen G2 layout:
+// current v3 record에서 마지막 Encounter 필드만 제거하여
+// 실제 v2 형태를 재현한다.
+std::vector<uint8_t> legacyV2Record(const GameSave& save) {
+  auto bytes =encode(save);
+  assert(bytes.size() >= ENCOUNTER_RECORD_SIZE);
+  // v2에는 EncounterState가 없었다.
+  bytes.resize(bytes.size() - ENCOUNTER_RECORD_SIZE);
+  // save version = 2
+  bytes[4] = 2;
+  bytes[5] = 0;
+  // payload length 다시 기록
+  const uint32_t payloadLength = static_cast<uint32_t>(bytes.size() - SAVE_HEADER_SIZE);
+  for (unsigned i = 0; i < 4; ++i) {
+    bytes[10 + i] = static_cast<uint8_t>(payloadLength >> (8 * i));
+  }
+  updateCrc(bytes);
+  return bytes;
+}
+
 void explorationTests() {
   constexpr uint64_t start = 1800000000ULL;
   ExplorationSession session;
@@ -243,7 +264,7 @@ void explorationTests() {
   // Correct CRC does not bypass exploration field validation.
   for (size_t offset : {size_t(0), size_t(1), size_t(3), size_t(11)}) {
     auto invalid = bytes;
-    const size_t position = bytes.size() - EXPLORATION_RECORD_SIZE;
+    const size_t position = bytes.size() - ENCOUNTER_RECORD_SIZE - EXPLORATION_RECORD_SIZE;
     if (offset == 0) invalid[position] = 9;
     if (offset == 1) invalid[position + 1] = 2;
     if (offset == 3) for (size_t i = 0; i < 8; ++i) invalid[position + 3 + i] = 0;
@@ -252,6 +273,178 @@ void explorationTests() {
     assert(deserialize(invalid.data(), invalid.size(), rebooted) == DecodeResult::Invalid);
   }
   std::puts("PASS exploration: start, elapsed, offline/rollback, completion once, ack, 64-bit persistence");
+}
+
+void encounterTests() {
+  EncounterState encounter;
+
+  // 기본 상태
+  assert(encounter.status == EncounterStatus::None);
+  assert(isValidEncounter(encounter));
+
+  // None 상태에서 다른 값이 남아 있으면 invalid
+  EncounterState invalidNone;
+  invalidNone.gender = Gender::Male;
+  assert(!isValidEncounter(invalidNone));
+
+  // 잘못된 조우 생성
+  assert(!setEncounter(encounter, 0, 0, 5, Gender::Male, false));
+  assert(!setEncounter(encounter, 1026, 0, 5, Gender::Male, false));
+  assert(!setEncounter(encounter, 19, 0, 0, Gender::Male, false));
+  assert(!setEncounter(encounter, 19, 0, 101, Gender::Male, false));
+
+  // 정상 야생 포켓몬 조우 생성
+  assert(setEncounter(encounter, 19, 0, 3, Gender::Female, true));
+  assert(encounter.status == EncounterStatus::Ready);
+  assert(encounter.speciesId == 19);
+  assert(encounter.formId == 0);
+  assert(encounter.level == 3);
+  assert(encounter.gender == Gender::Female);
+  assert(encounter.shiny);
+  assert(isValidEncounter(encounter));
+
+  // save -> load 후 동일한 조우 유지
+  GameSave save;
+  save.state = createNewGame();
+  save.state.encounter = encounter;
+
+  const auto bytes = encode(save);
+
+  GameSave decoded;
+  assert(
+    deserialize(bytes.data(), bytes.size(), decoded) ==
+    DecodeResult::Ok
+  );
+
+  assert(decoded.state.encounter.status == EncounterStatus::Ready);
+  assert(decoded.state.encounter.speciesId == 19);
+  assert(decoded.state.encounter.formId == 0);
+  assert(decoded.state.encounter.level == 3);
+  assert(decoded.state.encounter.gender == Gender::Female);
+  assert(decoded.state.encounter.shiny);
+
+  // CRC가 정상이어도 의미적으로 잘못된 Encounter는 거부
+  const size_t position =
+    bytes.size() - ENCOUNTER_RECORD_SIZE;
+
+  for (int test = 0; test < 4; ++test) {
+    auto invalid = bytes;
+
+    if (test == 0) {
+      invalid[position] = 9;  // invalid status
+    }
+
+    if (test == 1) {
+      invalid[position + 1] = 0;  // speciesId = 0
+      invalid[position + 2] = 0;
+    }
+
+    if (test == 2) {
+      invalid[position + 4] = 0;  // level = 0
+    }
+
+    if (test == 3) {
+      invalid[position + 5] = 9;  // invalid gender
+    }
+
+    updateCrc(invalid);
+
+    GameSave rejected;
+    assert(
+      deserialize(
+        invalid.data(),
+        invalid.size(),
+        rejected
+      ) == DecodeResult::Invalid
+    );
+  }
+
+  // clearEncounter 검증
+  clearEncounter(encounter);
+
+  assert(encounter.status == EncounterStatus::None);
+  assert(encounter.speciesId == 0);
+  assert(encounter.formId == 0);
+  assert(encounter.level == 0);
+  assert(encounter.gender == Gender::Genderless);
+  assert(!encounter.shiny);
+  assert(isValidEncounter(encounter));
+
+  // 테스트 Encounter Resolver: roll 0 -> 꼬렛
+  assert(resolveTestEncounter(encounter, 0));
+  assert(encounter.speciesId == 19);
+  assert(encounter.level == 2);
+
+  // 이미 Ready 상태이면 다시 뽑히면 안 된다.
+  const SpeciesId firstSpecies = encounter.speciesId;
+  assert(!resolveTestEncounter(encounter, 99));
+  assert(encounter.speciesId == firstSpecies);
+
+  // 구구 fixture
+  clearEncounter(encounter);
+  assert(resolveTestEncounter(encounter, 60));
+  assert(encounter.speciesId == 16);
+  assert(encounter.level == 3);
+
+  // 피카츄 fixture
+  clearEncounter(encounter);
+  assert(resolveTestEncounter(encounter, 99));
+  assert(encounter.speciesId == 25);
+  assert(encounter.level == 4);
+
+  // 결과 species는 실제 species table에서 조회 가능해야 한다.
+  const auto* wildSpecies =
+    findSpecies(encounter.speciesId, encounter.formId);
+  assert(wildSpecies != nullptr);
+
+  // 마지막으로 다시 clear
+  clearEncounter(encounter);
+  assert(encounter.status == EncounterStatus::None);
+  assert(encounter.speciesId == 0);
+  assert(encounter.level == 0);
+  assert(encounter.gender == Gender::Genderless);
+  assert(!encounter.shiny);
+
+  // 동일한 탐험은 항상 동일한 roll을 만든다.
+  ExplorationSession exploration;
+  exploration.status = ExplorationStatus::Complete;
+  exploration.regionId = TEST_REGION_ID;
+  exploration.startedAtEpoch = 1800000000ULL;
+  exploration.durationSeconds = 15;
+
+  const uint32_t roll1 =
+    makeTestEncounterRoll(exploration);
+
+  const uint32_t roll2 =
+    makeTestEncounterRoll(exploration);
+
+  assert(roll1 == roll2);
+
+  // 다른 탐험 시작 시각은 다른 roll을 만든다.
+  ExplorationSession another = exploration;
+  another.startedAtEpoch++;
+
+  const uint32_t roll3 =
+    makeTestEncounterRoll(another);
+
+  assert(roll1 != roll3);
+
+  // 같은 roll을 사용하면 조우 결과도 동일해야 한다.
+  EncounterState firstEncounter;
+  EncounterState secondEncounter;
+
+  assert(resolveTestEncounter(firstEncounter, roll1));
+  assert(resolveTestEncounter(secondEncounter, roll1));
+
+  assert(firstEncounter.speciesId == secondEncounter.speciesId);
+  assert(firstEncounter.formId == secondEncounter.formId);
+  assert(firstEncounter.level == secondEncounter.level);
+  assert(firstEncounter.gender == secondEncounter.gender);
+  assert(firstEncounter.shiny == secondEncounter.shiny);
+
+  std::puts(
+    "PASS encounter: validation, roundtrip, corruption, clear, resolver, deterministic roll"
+  );
 }
 
 void migrationTests() {
@@ -298,4 +491,53 @@ void migrationTests() {
   std::puts("PASS migration: G1 full party/progress/dex preserved, safe A/B upgrade and failure recovery");
 }
 
-int main() { codecTests(); storageTests(); explorationTests(); migrationTests(); }
+void v2MigrationTests() {
+  FakeNvs::reset();
+  GameSave original;
+  original.state = createNewGame();
+
+  original.sequence = 70;
+  constexpr uint64_t start = 1800000000ULL;
+  // G2에서 이미 존재하던 탐험 정보
+  assert(startExploration( original.state.exploration, TEST_REGION_ID, start, 15));
+  // 현재 v3에서는 조우가 있다고 가정하되,
+  // v2 record를 만들 때 이 필드는 제거되어야 한다.
+  assert(setEncounter(original.state.encounter, 19, 0, 3, Gender::Female, true));
+  const auto v2 = legacyV2Record(original);
+  FakeNvs::data["pokemon_g1/save_a"] = v2;
+  GameSave loaded;
+  // 실제 v2 세이브 로드
+  assert(GameSaveStorage::load(loaded) == LoadResult::Loaded);
+  assert(loaded.saveVersion == 2);
+  assert(loaded.sequence == 70);
+  // 기존 G2 탐험 정보는 유지
+  assert(loaded.state.exploration.status == ExplorationStatus::Exploring);
+  assert(loaded.state.exploration.regionId == TEST_REGION_ID);
+  assert(loaded.state.exploration.startedAtEpoch == start);
+  assert(loaded.state.exploration.durationSeconds == 15);
+  // v2에는 Encounter가 없었으므로
+  // 기본 None 상태로 시작해야 한다.
+  assert(loaded.state.encounter.status == EncounterStatus::None);
+  assert(isValidEncounter(loaded.state.encounter));
+  // 저장하면 v3로 안전하게 이전
+  assert(GameSaveStorage::save(loaded));
+  assert(loaded.saveVersion == SAVE_VERSION);
+  assert(loaded.sequence == 71);
+  // 재부팅을 가정해 다시 읽기
+  GameSave rebooted;
+  assert(GameSaveStorage::load(rebooted) == LoadResult::Loaded);
+  assert(rebooted.saveVersion == SAVE_VERSION);
+  assert(rebooted.state.exploration.status == ExplorationStatus::Exploring);
+  assert(rebooted.state.exploration.startedAtEpoch == start);
+  assert(rebooted.state.encounter.status == EncounterStatus::None);
+  std::puts("PASS v2 migration: exploration preserved, empty encounter, safe v3 upgrade");
+}
+
+int main() { 
+  codecTests();
+  storageTests();
+  explorationTests();
+  encounterTests();
+  migrationTests();
+  v2MigrationTests();
+}
