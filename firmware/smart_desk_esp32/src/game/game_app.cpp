@@ -17,6 +17,15 @@
   #define HAS_LOCAL_PIKACHU_ASSET 0
 #endif
 
+// G3-B 야생 조우용 로컬 스프라이트.
+// 공개 저장소에는 포함하지 않고, 없으면 텍스트 fallback으로 동작한다.
+#if __has_include("../../local_game_assets/pokemon/wild_encounter_1bit.h")
+  #include "../../local_game_assets/pokemon/wild_encounter_1bit.h"
+  #define HAS_LOCAL_WILD_ASSET 1
+#else
+  #define HAS_LOCAL_WILD_ASSET 0
+#endif
+
 
 using namespace AppConfig;
 
@@ -100,6 +109,12 @@ int regionChoice =
 
 const char* regionMessage =
   nullptr;
+
+
+// GAME 그래픽 OLED가 현재 GameScreen과 다른 내용을 보여줄 수 있음을 표시한다.
+// update()는 DESK 모드에서도 실행되므로 직접 OLED를 그리지 않고 dirty만 세운다.
+bool graphicsDirty =
+  true;
 
 
 void initGameState() {
@@ -268,6 +283,9 @@ bool persistEncounterForCompletedExploration() {
   screen =
     GameScreen::WildEncounter;
 
+  graphicsDirty =
+    true;
+
   completionSaveBlocked =
     false;
 
@@ -351,6 +369,242 @@ void drawPokemonGraphic(
   );
 
 #endif
+
+
+  target.display();
+}
+
+
+#if HAS_LOCAL_WILD_ASSET
+
+const uint8_t* localWildSprite(
+  PokemonGame::SpeciesId speciesId
+) {
+  switch (speciesId) {
+    case 16:
+      return pidgey_wild_1bit;
+
+    case 19:
+      return rattata_wild_1bit;
+
+    case 25:
+      return pikachu_wild_1bit;
+
+    default:
+      return nullptr;
+  }
+}
+
+#endif
+
+
+void drawWildEncounterGraphic(
+  Adafruit_SSD1306& target
+) {
+  using namespace PokemonGame;
+
+
+  target.clearDisplay();
+
+  target.setTextColor(
+    SSD1306_WHITE
+  );
+
+  target.setTextSize(
+    1
+  );
+
+
+  const auto& encounter =
+    gameSave.state.encounter;
+
+
+  const auto* species =
+    findSpecies(
+      encounter.speciesId,
+      encounter.formId
+    );
+
+
+  if (
+    encounter.status !=
+      EncounterStatus::Ready ||
+    !species
+  ) {
+
+    target.setCursor(
+      0,
+      0
+    );
+
+    target.print(
+      "WILD ?"
+    );
+
+    drawUtf8Text(
+      target,
+      0,
+      24,
+      "조우 오류"
+    );
+
+    target.display();
+
+    return;
+  }
+
+
+#if HAS_LOCAL_WILD_ASSET
+
+  const uint8_t* sprite =
+    localWildSprite(
+      encounter.speciesId
+    );
+
+
+  if (
+    sprite != nullptr &&
+    encounter.formId == 0
+  ) {
+
+    const int x =
+      (
+        SCREEN_WIDTH -
+        WILD_SPRITE_WIDTH
+      ) / 2;
+
+    const int y =
+      (
+        SCREEN_HEIGHT -
+        WILD_SPRITE_HEIGHT
+      ) / 2;
+
+
+    target.drawBitmap(
+      x,
+      y,
+      sprite,
+      WILD_SPRITE_WIDTH,
+      WILD_SPRITE_HEIGHT,
+      SSD1306_WHITE
+    );
+
+
+    // 바닥선 하나만 추가해 조우 장면처럼 보이게 한다.
+    target.drawLine(
+      8,
+      59,
+      119,
+      59,
+      SSD1306_WHITE
+    );
+
+
+    target.display();
+
+    return;
+  }
+
+#endif
+
+
+  // 로컬 스프라이트가 없는 공개 빌드용 fallback.
+  target.setCursor(
+    0,
+    0
+  );
+
+  target.print(
+    "WILD"
+  );
+
+
+  char idText[16];
+
+  snprintf(
+    idText,
+    sizeof(idText),
+    "#%03u",
+    static_cast<unsigned>(
+      encounter.speciesId
+    )
+  );
+
+
+  target.setCursor(
+    92,
+    0
+  );
+
+  target.print(
+    idText
+  );
+
+
+  target.drawLine(
+    0,
+    11,
+    127,
+    11,
+    SSD1306_WHITE
+  );
+
+
+  target.setTextSize(
+    2
+  );
+
+  target.setCursor(
+    8,
+    22
+  );
+
+  target.print(
+    "?"
+  );
+
+  target.setTextSize(
+    1
+  );
+
+
+  drawUtf8Text(
+    target,
+    38,
+    20,
+    species->name
+  );
+
+
+  char levelText[16];
+
+  snprintf(
+    levelText,
+    sizeof(levelText),
+    "Lv.%u",
+    static_cast<unsigned>(
+      encounter.level
+    )
+  );
+
+
+  target.setCursor(
+    38,
+    44
+  );
+
+  target.print(
+    levelText
+  );
+
+
+  target.drawLine(
+    8,
+    59,
+    119,
+    59,
+    SSD1306_WHITE
+  );
 
 
   target.display();
@@ -476,6 +730,9 @@ void init() {
 
   saveError =
     false;
+
+  graphicsDirty =
+    true;
 
 
 #if HAS_LOCAL_PIKACHU_ASSET
@@ -624,6 +881,9 @@ void update() {
     screen =
       GameScreen::WildEncounter;
 
+    graphicsDirty =
+      true;
+
   } else {
 
     completionSaveBlocked =
@@ -640,11 +900,25 @@ void drawDeskPet() {
 
 
 void drawGameGraphics() {
-  // G3-A에서는 야생 포켓몬 전용 그래픽 asset을 아직 연결하지 않는다.
-  // G3-B에서 species별 wild graphic/fallback을 추가한다.
-  drawPokemonGraphic(
-    Displays::desk()
-  );
+  if (
+    screen ==
+    GameScreen::WildEncounter
+  ) {
+
+    drawWildEncounterGraphic(
+      Displays::desk()
+    );
+
+  } else {
+
+    drawPokemonGraphic(
+      Displays::desk()
+    );
+  }
+
+
+  graphicsDirty =
+    false;
 }
 
 
@@ -1089,6 +1363,27 @@ void updatePokemonAnimation(
   DeviceMode deviceMode
 ) {
 
+  // 화면 상태가 바뀌었을 때 GAME 모드에서 한 번만 그래픽 OLED를 갱신한다.
+  if (
+    deviceMode == MODE_GAME &&
+    graphicsDirty
+  ) {
+
+    drawGameGraphics();
+
+    return;
+  }
+
+
+  // 야생 조우 화면은 G3-B에서 정적 장면으로 사용한다.
+  // 파트너 피카츄 idle animation이 주기적으로 덮어쓰지 않게 막는다.
+  if (
+    screen ==
+    GameScreen::WildEncounter
+  ) {
+    return;
+  }
+
 #if HAS_LOCAL_PIKACHU_ASSET
 
   unsigned long now =
@@ -1334,6 +1629,9 @@ void handleButton(
 
           screen =
             GameScreen::Home;
+
+          graphicsDirty =
+            true;
         }
       }
 

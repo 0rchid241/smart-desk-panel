@@ -27,6 +27,17 @@ bool visible(
     std::string::npos;
 }
 
+
+bool graphicsVisible(
+  const char* text
+) {
+  return
+    deskOled.text.find(
+      text
+    ) !=
+    std::string::npos;
+}
+
 } // namespace
 
 
@@ -536,6 +547,30 @@ int main() {
   );
 
 
+  // G3-B: 그래픽 OLED도 WildEncounter 상태를 반영한다.
+  // Host test에는 로컬 bitmap asset이 없으므로 fallback을 검증한다.
+  GameApp::drawGameGraphics();
+
+
+  assert(
+    graphicsVisible(
+      "WILD"
+    )
+  );
+
+  assert(
+    graphicsVisible(
+      firstWild->name
+    )
+  );
+
+  assert(
+    graphicsVisible(
+      "Lv."
+    )
+  );
+
+
   const unsigned completeWrites =
     FakeNvs::writes;
 
@@ -664,6 +699,21 @@ int main() {
   );
 
 
+  GameApp::drawGameGraphics();
+
+  assert(
+    graphicsVisible(
+      "포켓몬"
+    )
+  );
+
+  assert(
+    !graphicsVisible(
+      "WILD"
+    )
+  );
+
+
   const unsigned finalWrites =
     FakeNvs::writes;
 
@@ -701,6 +751,6 @@ int main() {
 
 
   std::puts(
-    "PASS app: exploration -> persisted encounter, reboot stability, atomic acknowledge, save retries"
+    "PASS app: persisted encounter, wild graphics fallback, reboot stability, atomic acknowledge"
   );
 }
