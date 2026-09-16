@@ -399,7 +399,53 @@ int main() {
     BUTTON_OK
   );
 
-  // 탐험 메뉴.
+  // C1.1: 홈에서 읽기 전용 파티 조회. 새 게임은 피카츄 1마리다.
+  const unsigned partyViewWrites =
+    FakeNvs::writes;
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  assert(
+    visible(
+      "파티"
+    )
+  );
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "파티 1/1"
+    ) &&
+    visible(
+      "피카츄"
+    ) &&
+    visible(
+      "Lv.5"
+    )
+  );
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  assert(
+    visible(
+      "파티 1/1"
+    ) &&
+    FakeNvs::writes ==
+      partyViewWrites
+  );
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  // 탐험 메뉴는 파티 다음 항목이다.
   GameApp::handleButton(
     BUTTON_RIGHT
   );
@@ -2105,6 +2151,60 @@ int main() {
       captureSuccessWrites
   );
 
+  // C1.1: 포획 직후 파티 조회에서 실제 두 번째 개체를 확인한다.
+  // GameApp::init()이 홈 메뉴 인덱스를 상태(0)로 초기화하므로 RIGHT 한 번이면 파티(1)다.
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "파티 1/2"
+    ) &&
+    visible(
+      "피카츄"
+    )
+  );
+
+  const unsigned ownedPartyWrites =
+    FakeNvs::writes;
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  assert(
+    visible(
+      "파티 2/2"
+    ) &&
+    visible(
+      "꼬렛"
+    ) &&
+    FakeNvs::writes ==
+      ownedPartyWrites
+  );
+
+  GameApp::handleButton(
+    BUTTON_LEFT
+  );
+
+  assert(
+    visible(
+      "파티 1/2"
+    ) &&
+    visible(
+      "피카츄"
+    )
+  );
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
   // 성공 결과는 이미 Battle None으로 저장됐으므로 reboot 후 Home이다.
   GameApp::init();
   GameApp::drawGameTextScreen();
@@ -2226,6 +2326,6 @@ int main() {
   );
 
   std::puts(
-    "PASS app G5-B.1: capture shake animation, command menu, Fight/Run, capture success/failure, counterattack, reboot and atomic save"
+    "PASS app C1.1: party viewer, C1 ownership, capture animation, full-party guard, reboot and atomic save"
   );
 }

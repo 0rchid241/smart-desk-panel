@@ -49,6 +49,7 @@ unsigned long pokemonIdleFrameStartedAt = 0;
 
 const char* GAME_MENU_ITEMS[] = {
   "상태",
+  "파티",
   "탐험",
   "도감"
 };
@@ -67,12 +68,14 @@ const char* BATTLE_COMMAND_ITEMS[] = {
 constexpr uint8_t BATTLE_COMMAND_COUNT = 4;
 
 int gameMenuIndex = 0;
+uint8_t partyViewIndex = 0;
 
 PokemonGame::GameSave gameSave;
 
 enum class GameScreen {
   Home,
   Status,
+  Party,
   RegionSelect,
   Exploring,
 
@@ -2105,6 +2108,7 @@ void init() {
   battleMoveSlot = 0;
   battleMoveViewportTop = 0;
   gameMenuIndex = 0;
+  partyViewIndex = 0;
   regionChoice = 0;
   regionMessage = nullptr;
   saveError = false;
@@ -2614,6 +2618,128 @@ void drawGameTextScreen() {
 
     oled.display();
 
+    return;
+  }
+
+  if (
+    screen ==
+    GameScreen::Party
+  ) {
+    const auto& party =
+      gameSave.state.party;
+
+    if (
+      party.count == 0
+    ) {
+      drawUtf8Text(
+        oled,
+        0,
+        0,
+        "파티 없음"
+      );
+
+      oled.setCursor(
+        0,
+        56
+      );
+
+      oled.print(
+        "OK"
+      );
+
+      oled.display();
+      return;
+    }
+
+    if (
+      partyViewIndex >=
+      party.count
+    ) {
+      partyViewIndex = 0;
+    }
+
+    const auto& member =
+      party.members[
+        partyViewIndex
+      ];
+
+    const auto* memberSpecies =
+      PokemonGame::findSpecies(
+        member.speciesId,
+        member.formId
+      );
+
+    char line[32];
+
+    snprintf(
+      line,
+      sizeof(line),
+      "파티 %u/%u",
+      static_cast<unsigned>(
+        partyViewIndex + 1
+      ),
+      static_cast<unsigned>(
+        party.count
+      )
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      line
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      18,
+      memberSpecies
+        ? memberSpecies->name
+        : "포켓몬"
+    );
+
+    const auto memberStats =
+      PokemonGame::calculateStats(
+        member
+      );
+
+    snprintf(
+      line,
+      sizeof(line),
+      "Lv.%u  HP %u/%u",
+      static_cast<unsigned>(
+        member.level
+      ),
+      static_cast<unsigned>(
+        member.currentHp
+      ),
+      static_cast<unsigned>(
+        memberStats.hp
+      )
+    );
+
+    oled.setCursor(
+      0,
+      38
+    );
+
+    oled.print(
+      line
+    );
+
+    oled.setCursor(
+      0,
+      56
+    );
+
+    oled.print(
+      party.count > 1
+        ? "L/R          OK"
+        : "             OK"
+    );
+
+    oled.display();
     return;
   }
 
@@ -3542,6 +3668,57 @@ void handleButton(
 
   if (
     screen ==
+    GameScreen::Party
+  ) {
+    const uint8_t count =
+      gameSave.state.party.count;
+
+    if (
+      count > 0 &&
+      (
+        button ==
+          BUTTON_LEFT ||
+        button ==
+          BUTTON_RIGHT
+      )
+    ) {
+      if (
+        button ==
+        BUTTON_LEFT
+      ) {
+        partyViewIndex =
+          static_cast<uint8_t>(
+            (
+              partyViewIndex +
+              count -
+              1
+            ) %
+            count
+          );
+      } else {
+        partyViewIndex =
+          static_cast<uint8_t>(
+            (
+              partyViewIndex +
+              1
+            ) %
+            count
+          );
+      }
+    } else if (
+      button ==
+      BUTTON_OK
+    ) {
+      screen =
+        GameScreen::Home;
+    }
+
+    drawGameTextScreen();
+    return;
+  }
+
+  if (
+    screen ==
     GameScreen::Status
   ) {
     if (
@@ -3615,6 +3792,15 @@ void handleButton(
     } else if (
       gameMenuIndex ==
       1
+    ) {
+      partyViewIndex = 0;
+      screen =
+        GameScreen::Party;
+
+      drawGameTextScreen();
+    } else if (
+      gameMenuIndex ==
+      2
     ) {
       regionChoice = 0;
       regionMessage = nullptr;
