@@ -236,6 +236,24 @@ void enterFight() {
   );
 }
 
+void enterBag() {
+  assertCommandScreen();
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "볼 선택"
+    )
+  );
+}
+
 void finishFeedback() {
   const auto writes =
     FakeNvs::writes;
@@ -673,28 +691,38 @@ int main() {
       commandWrites
   );
 
-  // 가방 placeholder.
+  // G5-B: 가방은 해금된 볼 목록과 돌아가기를 보여준다.
   GameApp::handleButton(
     BUTTON_OK
   );
 
   assert(
     visible(
-      "가방"
+      "볼 선택"
     ) &&
     visible(
-      "아직 준비 중"
-    )
-  );
-
-  GameApp::handleButton(
-    BUTTON_LEFT
-  );
-
-  assert(
+      "몬스터볼"
+    ) &&
     visible(
-      "아직 준비 중"
+      "돌아가기"
     )
+  );
+
+  assertTwoRowViewport(
+    "몬스터볼",
+    "돌아가기",
+    0
+  );
+
+  // 기본 ballTier 0에서는 몬스터볼 하나만 있고, 돌아가기로 전투 명령에 복귀한다.
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  assertTwoRowViewport(
+    "몬스터볼",
+    "돌아가기",
+    1
   );
 
   GameApp::handleButton(
@@ -1664,6 +1692,336 @@ int main() {
       runSuccessWrites
   );
 
+  // G5-B: 가방 → 볼 선택 → 포획 실패/성공 흐름.
+  auto captureState =
+    GameApp::state();
+
+  assert(
+    setEncounter(
+      captureState.encounter,
+      19,
+      0,
+      2,
+      Gender::Male,
+      false
+    )
+  );
+
+  assert(
+    startBattle(
+      captureState
+    )
+  );
+
+  captureState.progress.ballTier =
+    2;
+
+  captureState.progress.masterBallCount =
+    1;
+
+  captureState.battle.rngState =
+    4; // 첫 roll=76, 풀피 꼬렛 몬스터볼 60%에서 실패.
+
+  assert(
+    GameApp::saveState(
+      captureState
+    )
+  );
+
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assertCommandScreen();
+
+  enterBag();
+
+  // ballTier 2 + 마스터볼 1개: 일반 3종 + 마스터볼 + 돌아가기.
+  assert(
+    visible(
+      "몬스터볼"
+    ) &&
+    visible(
+      "슈퍼볼"
+    )
+  );
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  assert(
+    visible(
+      "하이퍼볼"
+    )
+  );
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  assert(
+    visible(
+      "마스터볼"
+    ) &&
+    visible(
+      "x1"
+    )
+  );
+
+  // 다시 몬스터볼로 순환한다.
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  GameApp::handleButton(
+    BUTTON_RIGHT
+  );
+
+  assert(
+    visible(
+      "몬스터볼"
+    )
+  );
+
+  const auto beforeCapture =
+    stateBytes(
+      GameApp::state()
+    );
+
+  const unsigned beforeCaptureWrites =
+    FakeNvs::writes;
+
+  // 포획 결과 저장 실패 시 RNG/HP/PP/turn/마스터볼 수량 모두 적용되지 않는다.
+  FakeNvs::partialWrite =
+    true;
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) ==
+      beforeCapture
+  );
+
+  assert(
+    visible(
+      "SAVE ERROR"
+    )
+  );
+
+  assert(
+    !visible(
+      "포획 실패!"
+    ) &&
+    !visible(
+      "포획 성공!"
+    )
+  );
+
+  FakeNvs::partialWrite =
+    false;
+
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) ==
+      beforeCapture
+  );
+
+  assertCommandScreen();
+
+  // 같은 seed로 재시도하면 같은 포획 실패 + 상대 반격이 저장된다.
+  enterBag();
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "포획 실패!"
+    ) &&
+    visible(
+      "상대가 공격한다"
+    )
+  );
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::Active
+  );
+
+  assert(
+    GameApp::state().battle.turn ==
+      1
+  );
+
+  assert(
+    GameApp::state().progress.masterBallCount ==
+      1
+  );
+
+  const auto afterFailedCapture =
+    stateBytes(
+      GameApp::state()
+    );
+
+  const unsigned afterFailedCaptureWrites =
+    FakeNvs::writes;
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "꼬렛의"
+    )
+  );
+
+  finishFeedback();
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::Active
+  );
+
+  assertCommandScreen();
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) ==
+      afterFailedCapture &&
+    FakeNvs::writes ==
+      afterFailedCaptureWrites
+  );
+
+  // transient 실패/공격 메시지는 reboot 후 다시 재생하지 않는다.
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) ==
+      afterFailedCapture
+  );
+
+  assertCommandScreen();
+
+  // 같은 전투를 성공 seed로 바꿔 G5-B 성공 UI를 검증한다.
+  auto captureSuccess =
+    GameApp::state();
+
+  captureSuccess.battle.rngState =
+    3; // 첫 roll=7, 몬스터볼 포획 성공.
+
+  assert(
+    GameApp::saveState(
+      captureSuccess
+    )
+  );
+
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assertCommandScreen();
+
+  const uint8_t partyBeforeCapture =
+    GameApp::state().party.count;
+
+  assert(
+    !dexContains(
+      GameApp::state().pokedex.caught,
+      19
+    )
+  );
+
+  enterBag();
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::None
+  );
+
+  assert(
+    visible(
+      "꼬렛"
+    ) &&
+    visible(
+      "포획 성공!"
+    ) &&
+    visible(
+      "OK 확인"
+    )
+  );
+
+  // G5-B는 판정까지만: 실제 소유/도감 반영은 G5-C에서 한다.
+  assert(
+    GameApp::state().party.count ==
+      partyBeforeCapture
+  );
+
+  assert(
+    !dexContains(
+      GameApp::state().pokedex.caught,
+      19
+    )
+  );
+
+  const unsigned captureSuccessWrites =
+    FakeNvs::writes;
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "피카츄"
+    )
+  );
+
+  assert(
+    FakeNvs::writes ==
+      captureSuccessWrites
+  );
+
+  // 성공 결과는 이미 Battle None으로 저장됐으므로 reboot 후 Home이다.
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assert(
+    visible(
+      "피카츄"
+    )
+  );
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::None
+  );
+
+  assert(
+    FakeNvs::writes >
+      beforeCaptureWrites
+  );
+
   const unsigned finalWrites =
     FakeNvs::writes;
 
@@ -1694,6 +2052,6 @@ int main() {
   );
 
   std::puts(
-    "PASS app G5-A2: command menu, Fight, deterministic run success/failure, counterattack, reboot and atomic save"
+    "PASS app G5-B: command menu, Fight/Run, ball selection, capture success/failure, counterattack, reboot and atomic save"
   );
 }

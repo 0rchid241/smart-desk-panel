@@ -257,6 +257,110 @@ void running() {
   static_assert(SAVE_VERSION == 4 && BATTLE_RECORD_SIZE == 40, "G5-A2 keeps v4 save layout");
 }
 
+void capturing() {
+  auto state = active();
+
+  // 새 게임은 ballTier 0이라 몬스터볼만 기본 사용 가능하다.
+  assert(canUseCaptureBall(state, CaptureBall::Poke));
+  assert(!canUseCaptureBall(state, CaptureBall::Great));
+  assert(!canUseCaptureBall(state, CaptureBall::Ultra));
+  assert(!canUseCaptureBall(state, CaptureBall::Master));
+  assert(captureChance(state, CaptureBall::Poke) == 60);
+
+  // ballTier는 하위 일반 볼을 모두 해금한다. 마스터볼은 별도 개수다.
+  state.progress.ballTier = 2;
+  state.progress.masterBallCount = 1;
+  assert(canUseCaptureBall(state, CaptureBall::Great));
+  assert(canUseCaptureBall(state, CaptureBall::Ultra));
+  assert(canUseCaptureBall(state, CaptureBall::Master));
+  assert(captureChance(state, CaptureBall::Great) == 78);
+  assert(captureChance(state, CaptureBall::Ultra) == 95);
+  assert(captureChance(state, CaptureBall::Master) == 100);
+
+  // HP가 낮을수록 포획률이 올라가며 일반 볼은 95%에서 제한한다.
+  auto weakened = active();
+  weakened.battle.opponent.currentHp = 1;
+  assert(captureChance(weakened, CaptureBall::Poke) == 95);
+
+  // seed 3의 첫 roll=7: 풀피 꼬렛도 몬스터볼(60%) 포획 성공.
+  auto caught = active();
+  caught.battle.rngState = 3;
+  BattleCaptureReport caughtReport;
+  assert(attemptBattleCapture(caught, CaptureBall::Poke, &caughtReport));
+  assert(caughtReport.captured && !caughtReport.opponentActed);
+  assert(caughtReport.ball == CaptureBall::Poke);
+  assert(caughtReport.chance == 60);
+  assert(caughtReport.wild.status == EncounterStatus::Ready);
+  assert(caughtReport.wild.speciesId == 19);
+  assert(caught.battle.status == BattleStatus::None);
+  assert(isValidState(caught));
+  roundtrip(caught);
+
+  // seed 4의 첫 roll=76: 풀피 꼬렛 포획 실패 후 야생이 한 번 행동한다.
+  auto failed = active();
+  failed.battle.rngState = 4;
+  auto repeat = failed;
+  BattleCaptureReport failReport;
+  BattleCaptureReport repeatReport;
+  assert(attemptBattleCapture(failed, CaptureBall::Poke, &failReport));
+  assert(attemptBattleCapture(repeat, CaptureBall::Poke, &repeatReport));
+  assert(!failReport.captured && failReport.opponentActed);
+  assert(failReport.chance == 60);
+  assert(failReport.opponentAction.actor == BattleActor::Wild);
+  assert(failReport.opponentAction.moveId == 33);
+  assert(failReport.opponentAction.hit);
+  assert(failed.battle.status == BattleStatus::Active);
+  assert(failed.battle.turn == 1);
+  assert(failed.battle.opponent.pp[0] == 34);
+  assert(snapshot(failed) == snapshot(repeat));
+  assert(failReport.opponentAction.damage == repeatReport.opponentAction.damage);
+  roundtrip(failed);
+
+  // 실패 반격으로 쓰러지면 기존 패배 결과로 연결한다.
+  auto fainted = active();
+  fainted.battle.player.currentHp = 1;
+  fainted.battle.rngState = 4;
+  BattleCaptureReport faintReport;
+  assert(attemptBattleCapture(fainted, CaptureBall::Poke, &faintReport));
+  assert(!faintReport.captured && faintReport.opponentActed);
+  assert(faintReport.opponentAction.fainted);
+  assert(fainted.battle.status == BattleStatus::Lost);
+  assert(fainted.battle.turn == 1);
+  roundtrip(fainted);
+
+  // 마스터볼은 RNG와 무관하게 성공하고 저장 후보에서만 1개 소비한다.
+  auto master = active();
+  master.progress.masterBallCount = 2;
+  master.battle.rngState = 13;
+  BattleCaptureReport masterReport;
+  assert(attemptBattleCapture(master, CaptureBall::Master, &masterReport));
+  assert(masterReport.captured && masterReport.chance == 100);
+  assert(master.progress.masterBallCount == 1);
+  assert(master.battle.status == BattleStatus::None);
+  roundtrip(master);
+
+  // 잠긴 볼/비전투 상태에서는 state와 report를 건드리지 않는다.
+  auto locked = active();
+  BattleCaptureReport untouched;
+  untouched.captured = true;
+  untouched.opponentActed = true;
+  const auto lockedBefore = snapshot(locked);
+  assert(!attemptBattleCapture(locked, CaptureBall::Great, &untouched));
+  assert(snapshot(locked) == lockedBefore);
+  assert(untouched.captured && untouched.opponentActed);
+
+  auto noBattle = caught;
+  const auto noBattleBefore = snapshot(noBattle);
+  assert(!attemptBattleCapture(noBattle, CaptureBall::Poke, &untouched));
+  assert(snapshot(noBattle) == noBattleBefore);
+
+  static_assert(
+    SAVE_VERSION == 4 &&
+    BATTLE_RECORD_SIZE == 40,
+    "G5-B keeps v4 save layout"
+  );
+}
+
 void validationAndMigration() {
   auto state = active();
   const auto bytes = snapshot(state);
@@ -313,6 +417,7 @@ void battleTests() {
   typeAndDamage();
   turns();
   running();
+  capturing();
   validationAndMigration();
-  std::puts("PASS battle: types, moves, turns, deterministic run success/failure, counterattack, v4 codec, v3 migration");
+  std::puts("PASS battle: types, moves, turns, run, capture chance/success/failure, counterattack, v4 codec, v3 migration");
 }

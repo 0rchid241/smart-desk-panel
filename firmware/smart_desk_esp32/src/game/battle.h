@@ -44,6 +44,23 @@ struct BattleRunReport {
   BattleActionReport opponentAction;
 };
 
+// G5-B 포획용 볼. 일반 볼은 ballTier로 해금되고 마스터볼만 개수를 가진다.
+enum class CaptureBall : uint8_t {
+  Poke = 0,
+  Great = 1,
+  Ultra = 2,
+  Master = 3
+};
+
+struct BattleCaptureReport {
+  CaptureBall ball = CaptureBall::Poke;
+  EncounterState wild;
+  uint8_t chance = 0;
+  bool captured = false;
+  bool opponentActed = false;
+  BattleActionReport opponentAction;
+};
+
 PokemonInstance wildPokemon(const BattleState& battle);
 bool isValidBattle(const BattleState& battle, const PokemonInstance* player);
 uint32_t battleRandom(uint32_t& state);
@@ -60,5 +77,11 @@ bool resolveBattleTurn(GameState& state, uint8_t playerSlot, BattleTurnReport* r
 // 도망 성공 시 BattleState를 None으로 정리한다.
 // 도망 실패 시 야생 포켓몬이 한 번 행동하며, state/report 적용은 함수 성공 시에만 이뤄진다.
 bool attemptBattleRun(GameState& state, BattleRunReport* report = nullptr);
+// 일반 볼은 무제한 fixture이며 progress.ballTier(0~2)로 해금한다.
+// 마스터볼은 progress.masterBallCount를 실제로 1개 소비한다.
+bool canUseCaptureBall(const GameState& state, CaptureBall ball);
+uint8_t captureChance(const GameState& state, CaptureBall ball);
+bool attemptBattleCapture(GameState& state, CaptureBall ball,
+                          BattleCaptureReport* report = nullptr);
 bool acknowledgeBattle(GameState& state);
 }

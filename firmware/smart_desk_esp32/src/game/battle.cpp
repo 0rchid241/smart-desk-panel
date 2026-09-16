@@ -63,7 +63,7 @@ uint8_t chooseWildMove(BattleState& b, const PokemonInstance& wild) {
   return options[battleRandom(b.rngState) % count];
 }
 
-void resolveWildRunCounterattack(
+void resolveWildCounterattack(
   BattleState& b,
   const PokemonInstance& player,
   const PokemonInstance& wild,
@@ -172,6 +172,34 @@ void resolveWildRunCounterattack(
   action.fainted =
     b.player.currentHp ==
     0;
+}
+
+uint8_t captureBaseChance(SpeciesId speciesId) {
+  switch (speciesId) {
+    case 16:
+      return 55; // 구구
+    case 19:
+      return 60; // 꼬렛
+    case 25:
+      return 45; // 피카츄
+    default:
+      return 0;
+  }
+}
+
+uint16_t captureBallMultiplier(CaptureBall ball) {
+  switch (ball) {
+    case CaptureBall::Poke:
+      return 100;
+    case CaptureBall::Great:
+      return 130;
+    case CaptureBall::Ultra:
+      return 160;
+    case CaptureBall::Master:
+      return 100;
+    default:
+      return 0;
+  }
 }
 } // namespace
 
@@ -423,7 +451,7 @@ bool attemptBattleRun(GameState& state, BattleRunReport* report) {
   runReport.opponentActed =
     true;
 
-  resolveWildRunCounterattack(
+  resolveWildCounterattack(
     b,
     player,
     wild,
@@ -460,6 +488,265 @@ bool attemptBattleRun(GameState& state, BattleRunReport* report) {
   ) {
     *report =
       runReport;
+  }
+
+  return true;
+}
+
+bool canUseCaptureBall(const GameState& state, CaptureBall ball) {
+  if (
+    !isValidState(
+      state
+    ) ||
+    state.battle.status !=
+      BattleStatus::Active
+  ) {
+    return false;
+  }
+
+  switch (ball) {
+    case CaptureBall::Poke:
+      return true;
+
+    case CaptureBall::Great:
+      return
+        state.progress.ballTier >=
+        1;
+
+    case CaptureBall::Ultra:
+      return
+        state.progress.ballTier >=
+        2;
+
+    case CaptureBall::Master:
+      return
+        state.progress.masterBallCount >
+        0;
+
+    default:
+      return false;
+  }
+}
+
+uint8_t captureChance(const GameState& state, CaptureBall ball) {
+  if (
+    !canUseCaptureBall(
+      state,
+      ball
+    )
+  ) {
+    return 0;
+  }
+
+  if (
+    ball ==
+    CaptureBall::Master
+  ) {
+    return 100;
+  }
+
+  const auto& b =
+    state.battle;
+
+  const auto wild =
+    wildPokemon(
+      b
+    );
+
+  const uint16_t maxHp =
+    calculateStats(
+      wild
+    ).hp;
+
+  if (
+    !maxHp ||
+    b.opponent.currentHp >
+      maxHp
+  ) {
+    return 0;
+  }
+
+  const uint8_t base =
+    captureBaseChance(
+      b.wild.speciesId
+    );
+
+  if (
+    !base
+  ) {
+    return 0;
+  }
+
+  const uint32_t missingPercent =
+    static_cast<uint32_t>(
+      maxHp -
+      b.opponent.currentHp
+    ) *
+    100u /
+    maxHp;
+
+  // G5-B 단순 포획식:
+  // 종별 기본 확률 + 잃은 HP 비율의 절반에 볼 배율을 적용한다.
+  // 상태이상 보정은 상태 시스템이 생기는 단계에서 추가한다.
+  uint32_t chance =
+    (
+      static_cast<uint32_t>(
+        base
+      ) +
+      missingPercent /
+      2u
+    ) *
+    captureBallMultiplier(
+      ball
+    ) /
+    100u;
+
+  if (
+    chance < 5u
+  ) {
+    chance = 5u;
+  } else if (
+    chance > 95u
+  ) {
+    chance = 95u;
+  }
+
+  return
+    static_cast<uint8_t>(
+      chance
+    );
+}
+
+bool attemptBattleCapture(
+  GameState& state,
+  CaptureBall ball,
+  BattleCaptureReport* report
+) {
+  if (
+    !canUseCaptureBall(
+      state,
+      ball
+    )
+  ) {
+    return false;
+  }
+
+  auto next =
+    state;
+
+  auto& b =
+    next.battle;
+
+  BattleCaptureReport captureReport;
+  captureReport.ball =
+    ball;
+  captureReport.wild =
+    b.wild;
+  captureReport.chance =
+    captureChance(
+      next,
+      ball
+    );
+
+  if (
+    ball ==
+    CaptureBall::Master
+  ) {
+    --next.progress.masterBallCount;
+    captureReport.captured =
+      true;
+  } else {
+    const uint32_t roll =
+      battleRandom(
+        b.rngState
+      ) %
+      100u;
+
+    captureReport.captured =
+      roll <
+      captureReport.chance;
+  }
+
+  if (
+    captureReport.captured
+  ) {
+    // G5-B에서는 포획 판정까지만 구현한다.
+    // G5-C에서 이 wild 정보를 Party/Box/Pokedex에 반영하기 전까지는
+    // 성공 결과를 일시 UI로 보여준 뒤 전투를 종료한다.
+    b =
+      BattleState{};
+
+    if (
+      !isValidState(
+        next
+      )
+    ) {
+      return false;
+    }
+
+    state =
+      next;
+
+    if (
+      report
+    ) {
+      *report =
+        captureReport;
+    }
+
+    return true;
+  }
+
+  const auto& player =
+    *partner(
+      next
+    );
+
+  const auto wild =
+    wildPokemon(
+      b
+    );
+
+  captureReport.opponentActed =
+    true;
+
+  resolveWildCounterattack(
+    b,
+    player,
+    wild,
+    captureReport.opponentAction
+  );
+
+  if (
+    b.turn !=
+    UINT32_MAX
+  ) {
+    ++b.turn;
+  }
+
+  if (
+    !b.player.currentHp
+  ) {
+    b.status =
+      BattleStatus::Lost;
+  }
+
+  if (
+    !isValidState(
+      next
+    )
+  ) {
+    return false;
+  }
+
+  state =
+    next;
+
+  if (
+    report
+  ) {
+    *report =
+      captureReport;
   }
 
   return true;

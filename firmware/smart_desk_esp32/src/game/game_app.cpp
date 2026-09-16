@@ -82,15 +82,17 @@ enum class GameScreen {
 
   WildEncounter,
   Battle,
-  RunSuccess
+  RunSuccess,
+  CaptureSuccess
 };
 
 enum class BattleUiMode : uint8_t {
   Command,
   MoveSelection,
-  BagUnavailable,
+  BallSelection,
   PartyUnavailable,
-  RunFailed
+  RunFailed,
+  CaptureFailed
 };
 
 GameScreen screen = GameScreen::Home;
@@ -100,7 +102,10 @@ uint8_t battleCommandIndex = 0;
 uint8_t battleCommandViewportTop = 0;
 uint8_t battleMoveSlot = 0;
 uint8_t battleMoveViewportTop = 0;
+uint8_t battleBallIndex = 0;
+uint8_t battleBallViewportTop = 0;
 PokemonGame::BattleTurnReport battleReport;
+PokemonGame::BattleCaptureReport battleCaptureReport;
 uint8_t battleActionIndex = 0;
 bool hitEffect = false;
 unsigned long hitEffectStarted = 0;
@@ -126,6 +131,71 @@ void resetBattleCommandUi() {
   battleUiMode = BattleUiMode::Command;
   battleCommandIndex = 0;
   battleCommandViewportTop = 0;
+}
+
+const char* captureBallName(
+  PokemonGame::CaptureBall ball
+) {
+  using PokemonGame::CaptureBall;
+
+  switch (ball) {
+    case CaptureBall::Poke:
+      return "몬스터볼";
+
+    case CaptureBall::Great:
+      return "슈퍼볼";
+
+    case CaptureBall::Ultra:
+      return "하이퍼볼";
+
+    case CaptureBall::Master:
+      return "마스터볼";
+
+    default:
+      return "?";
+  }
+}
+
+uint8_t availableBattleBalls(
+  PokemonGame::CaptureBall (&balls)[4]
+) {
+  using namespace PokemonGame;
+
+  uint8_t count = 0;
+
+  balls[count++] =
+    CaptureBall::Poke;
+
+  if (
+    gameSave.state.progress.ballTier >=
+    1
+  ) {
+    balls[count++] =
+      CaptureBall::Great;
+  }
+
+  if (
+    gameSave.state.progress.ballTier >=
+    2
+  ) {
+    balls[count++] =
+      CaptureBall::Ultra;
+  }
+
+  if (
+    gameSave.state.progress.masterBallCount >
+    0
+  ) {
+    balls[count++] =
+      CaptureBall::Master;
+  }
+
+  return count;
+}
+
+void resetBattleBallUi() {
+  battleBallIndex = 0;
+  battleBallViewportTop = 0;
 }
 
 void initGameState() {
@@ -979,6 +1049,161 @@ void drawBattleMoveSelection(
   }
 }
 
+void drawBattleBallSelection(
+  Adafruit_SSD1306& oled
+) {
+  using namespace PokemonGame;
+
+  CaptureBall balls[4] = {};
+  const uint8_t ballCount =
+    availableBattleBalls(
+      balls
+    );
+
+  // 마지막 항목은 언제나 "돌아가기".
+  const uint8_t optionCount =
+    static_cast<uint8_t>(
+      ballCount +
+      1
+    );
+
+  if (
+    battleBallIndex >=
+    optionCount
+  ) {
+    battleBallIndex = 0;
+  }
+
+  const uint8_t lastTop =
+    optionCount > 2
+      ? static_cast<uint8_t>(
+          optionCount -
+          2
+        )
+      : 0;
+
+  if (
+    battleBallViewportTop >
+    lastTop
+  ) {
+    battleBallViewportTop =
+      lastTop;
+  }
+
+  if (
+    battleBallIndex <
+    battleBallViewportTop
+  ) {
+    battleBallViewportTop =
+      battleBallIndex;
+  } else if (
+    battleBallIndex >=
+    battleBallViewportTop +
+      2
+  ) {
+    battleBallViewportTop =
+      battleBallIndex -
+      1;
+  }
+
+  drawUtf8Text(
+    oled,
+    0,
+    0,
+    "볼 선택"
+  );
+
+  for (
+    uint8_t row = 0;
+    row < 2 &&
+    battleBallViewportTop + row <
+      optionCount;
+    ++row
+  ) {
+    const uint8_t item =
+      static_cast<uint8_t>(
+        battleBallViewportTop +
+        row
+      );
+
+    const int16_t y =
+      static_cast<int16_t>(
+        18 +
+        row * 18
+      );
+
+    if (
+      item ==
+      battleBallIndex
+    ) {
+      oled.setCursor(
+        0,
+        y + 4
+      );
+
+      oled.print(
+        ">"
+      );
+    }
+
+    drawUtf8Text(
+      oled,
+      12,
+      y,
+      item < ballCount
+        ? captureBallName(
+            balls[item]
+          )
+        : "돌아가기"
+    );
+  }
+
+  oled.setCursor(
+    0,
+    56
+  );
+
+  if (
+    saveError
+  ) {
+    oled.print(
+      "SAVE ERROR / OK"
+    );
+
+    return;
+  }
+
+  if (
+    battleBallIndex <
+      ballCount &&
+    balls[
+      battleBallIndex
+    ] ==
+      CaptureBall::Master
+  ) {
+    char text[24];
+
+    snprintf(
+      text,
+      sizeof(text),
+      "x%u  L/R OK",
+      static_cast<unsigned>(
+        gameSave.state.progress.masterBallCount
+      )
+    );
+
+    oled.print(
+      text
+    );
+
+    return;
+  }
+
+  oled.print(
+    "L/R          OK"
+  );
+}
+
 void drawBattleUnavailable(
   Adafruit_SSD1306& oled,
   const char* title
@@ -1015,6 +1240,33 @@ void drawBattleRunFailed(
     0,
     0,
     "도망 실패!"
+  );
+
+  drawUtf8Text(
+    oled,
+    0,
+    24,
+    "상대가 공격한다"
+  );
+
+  oled.setCursor(
+    0,
+    56
+  );
+
+  oled.print(
+    "OK"
+  );
+}
+
+void drawBattleCaptureFailed(
+  Adafruit_SSD1306& oled
+) {
+  drawUtf8Text(
+    oled,
+    0,
+    0,
+    "포획 실패!"
   );
 
   drawUtf8Text(
@@ -1205,10 +1457,9 @@ void drawBattleText(
       );
       break;
 
-    case BattleUiMode::BagUnavailable:
-      drawBattleUnavailable(
-        oled,
-        "가방"
+    case BattleUiMode::BallSelection:
+      drawBattleBallSelection(
+        oled
       );
       break;
 
@@ -1221,6 +1472,12 @@ void drawBattleText(
 
     case BattleUiMode::RunFailed:
       drawBattleRunFailed(
+        oled
+      );
+      break;
+
+    case BattleUiMode::CaptureFailed:
+      drawBattleCaptureFailed(
         oled
       );
       break;
@@ -1573,9 +1830,13 @@ void init() {
   battleReport =
     PokemonGame::BattleTurnReport{};
 
+  battleCaptureReport =
+    PokemonGame::BattleCaptureReport{};
+
   battleActionIndex = 0;
   hitEffect = false;
   resetBattleCommandUi();
+  resetBattleBallUi();
   battleMoveSlot = 0;
   battleMoveViewportTop = 0;
   gameMenuIndex = 0;
@@ -1795,6 +2056,44 @@ void drawGameTextScreen() {
       oled,
       0,
       40,
+      "OK 확인"
+    );
+
+    oled.display();
+
+    return;
+  }
+
+  if (
+    screen ==
+    GameScreen::CaptureSuccess
+  ) {
+    const auto* species =
+      PokemonGame::findSpecies(
+        battleCaptureReport.wild.speciesId,
+        battleCaptureReport.wild.formId
+      );
+
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      species
+        ? species->name
+        : "포켓몬"
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      24,
+      "포획 성공!"
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      48,
       "OK 확인"
     );
 
@@ -2270,6 +2569,28 @@ void handleButton(
 
   if (
     screen ==
+    GameScreen::CaptureSuccess
+  ) {
+    if (
+      button ==
+      BUTTON_OK
+    ) {
+      screen =
+        GameScreen::Home;
+
+      battleCaptureReport =
+        PokemonGame::BattleCaptureReport{};
+
+      graphicsDirty = true;
+    }
+
+    drawGameTextScreen();
+
+    return;
+  }
+
+  if (
+    screen ==
     GameScreen::Battle
   ) {
     using namespace PokemonGame;
@@ -2359,8 +2680,10 @@ void handleButton(
                 break;
 
               case 1:
+                resetBattleBallUi();
+
                 battleUiMode =
-                  BattleUiMode::BagUnavailable;
+                  BattleUiMode::BallSelection;
 
                 break;
 
@@ -2491,7 +2814,119 @@ void handleButton(
 
           break;
 
-        case BattleUiMode::BagUnavailable:
+        case BattleUiMode::BallSelection: {
+          CaptureBall balls[4] = {};
+          const uint8_t ballCount =
+            availableBattleBalls(
+              balls
+            );
+
+          const uint8_t optionCount =
+            static_cast<uint8_t>(
+              ballCount +
+              1
+            );
+
+          if (
+            button ==
+            BUTTON_LEFT
+          ) {
+            battleBallIndex =
+              static_cast<uint8_t>(
+                (
+                  battleBallIndex +
+                  optionCount -
+                  1
+                ) %
+                optionCount
+              );
+          } else if (
+            button ==
+            BUTTON_RIGHT
+          ) {
+            battleBallIndex =
+              static_cast<uint8_t>(
+                (
+                  battleBallIndex +
+                  1
+                ) %
+                optionCount
+              );
+          } else if (
+            button ==
+            BUTTON_OK
+          ) {
+            if (
+              battleBallIndex >=
+              ballCount
+            ) {
+              resetBattleCommandUi();
+              resetBattleBallUi();
+            } else {
+              auto next =
+                gameSave.state;
+
+              BattleCaptureReport captureReport;
+
+              if (
+                attemptBattleCapture(
+                  next,
+                  balls[
+                    battleBallIndex
+                  ],
+                  &captureReport
+                ) &&
+                saveState(
+                  next
+                )
+              ) {
+                battleCaptureReport =
+                  captureReport;
+
+                battleReport =
+                  BattleTurnReport{};
+
+                battleActionIndex = 0;
+                hitEffect = false;
+
+                if (
+                  captureReport.captured
+                ) {
+                  // G5-B에서는 성공 판정과 결과 UI까지만 담당한다.
+                  // 실제 소유/Party/Box/Pokedex 반영은 G5-C에서 연결한다.
+                  screen =
+                    GameScreen::CaptureSuccess;
+
+                  resetBattleCommandUi();
+                  resetBattleBallUi();
+
+                  graphicsDirty = true;
+                } else {
+                  if (
+                    captureReport.opponentActed
+                  ) {
+                    battleReport.actions[0] =
+                      captureReport.opponentAction;
+
+                    battleReport.count = 1;
+                  }
+
+                  // 실패 안내를 먼저 보여주고 OK에서 저장된 상대 행동을 재생한다.
+                  battleActionIndex =
+                    battleReport.count;
+
+                  battleUiMode =
+                    BattleUiMode::CaptureFailed;
+
+                  graphicsDirty = true;
+                }
+              }
+            }
+          }
+
+          break;
+        }
+
         case BattleUiMode::PartyUnavailable:
           if (
             button ==
@@ -2503,6 +2938,22 @@ void handleButton(
           break;
 
         case BattleUiMode::RunFailed:
+          if (
+            button ==
+            BUTTON_OK
+          ) {
+            if (
+              battleReport.count > 0
+            ) {
+              battleActionIndex = 0;
+              beginActionFeedback();
+            } else {
+              resetBattleCommandUi();
+            }
+          }
+
+          break;
+        case BattleUiMode::CaptureFailed:
           if (
             button ==
             BUTTON_OK
