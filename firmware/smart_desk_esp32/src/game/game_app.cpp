@@ -83,6 +83,7 @@ enum class GameScreen {
   WildEncounter,
   Battle,
   RunSuccess,
+  CaptureAnimation,
   CaptureSuccess
 };
 
@@ -110,6 +111,16 @@ uint8_t battleActionIndex = 0;
 bool hitEffect = false;
 unsigned long hitEffectStarted = 0;
 unsigned long hitEffectFrame = 0;
+
+// G5-B.1 포획 연출은 저장하지 않는 transient UI 상태다.
+// 판정/반격 결과는 이미 저장된 뒤 이 타이머 연출만 재생된다.
+unsigned long captureAnimationStartedAt = 0;
+uint8_t captureAnimationShakeCount = 0;
+uint8_t captureAnimationVisualFrame = 0xff;
+
+constexpr unsigned long CAPTURE_INTRO_MS = 350;
+constexpr unsigned long CAPTURE_SHAKE_MS = 420;
+constexpr unsigned long CAPTURE_SETTLE_MS = 250;
 
 bool saveError = false;
 
@@ -196,6 +207,249 @@ uint8_t availableBattleBalls(
 void resetBattleBallUi() {
   battleBallIndex = 0;
   battleBallViewportTop = 0;
+}
+
+unsigned long captureAnimationDuration() {
+  return
+    CAPTURE_INTRO_MS +
+    static_cast<unsigned long>(
+      captureAnimationShakeCount
+    ) *
+      CAPTURE_SHAKE_MS +
+    CAPTURE_SETTLE_MS;
+}
+
+uint8_t captureVisualFrameForElapsed(
+  unsigned long elapsed
+) {
+  if (
+    elapsed <
+    CAPTURE_INTRO_MS
+  ) {
+    return 0;
+  }
+
+  elapsed -=
+    CAPTURE_INTRO_MS;
+
+  const unsigned long shakeSpan =
+    static_cast<unsigned long>(
+      captureAnimationShakeCount
+    ) *
+    CAPTURE_SHAKE_MS;
+
+  if (
+    elapsed >=
+    shakeSpan
+  ) {
+    return 0;
+  }
+
+  const unsigned long withinShake =
+    elapsed %
+    CAPTURE_SHAKE_MS;
+
+  if (
+    withinShake <
+    120
+  ) {
+    return 1;
+  }
+
+  if (
+    withinShake <
+    240
+  ) {
+    return 2;
+  }
+
+  return 0;
+}
+
+int captureBallOffsetX() {
+  switch (
+    captureAnimationVisualFrame
+  ) {
+    case 1:
+      return -3;
+
+    case 2:
+      return 3;
+
+    default:
+      return 0;
+  }
+}
+
+void beginCaptureAnimation() {
+  // 성공은 원작 느낌에 가깝게 3회 흔들고,
+  // 실패는 확률이 높을수록 한 번 더 버티는 연출만 준다.
+  // 실제 포획 판정에는 영향을 주지 않는다.
+  captureAnimationShakeCount =
+    battleCaptureReport.captured
+      ? 3
+      : (
+          battleCaptureReport.chance >=
+          60
+            ? 2
+            : 1
+        );
+
+  captureAnimationStartedAt =
+    millis();
+
+  captureAnimationVisualFrame =
+    0xff;
+
+  screen =
+    GameScreen::CaptureAnimation;
+
+  hitEffect = false;
+  graphicsDirty = true;
+}
+
+void finishCaptureAnimation() {
+  captureAnimationVisualFrame = 0;
+  graphicsDirty = true;
+
+  if (
+    battleCaptureReport.captured
+  ) {
+    screen =
+      GameScreen::CaptureSuccess;
+
+    return;
+  }
+
+  screen =
+    GameScreen::Battle;
+
+  battleActionIndex =
+    battleReport.count;
+
+  battleUiMode =
+    BattleUiMode::CaptureFailed;
+}
+
+void drawCaptureBallIcon(
+  Adafruit_SSD1306& oled,
+  int16_t centerX,
+  int16_t topY
+) {
+  // 16x16 흑백 포획볼 아이콘. 색상 구분 대신 text OLED의 볼 이름을 사용한다.
+  static const uint16_t rows[16] = {
+    0x07e0,
+    0x1818,
+    0x2004,
+    0x4002,
+    0x8001,
+    0x8001,
+    0xffff,
+    0x83c1,
+    0x8241,
+    0xffff,
+    0x8001,
+    0x8001,
+    0x4002,
+    0x2004,
+    0x1818,
+    0x07e0
+  };
+
+  const int16_t left =
+    static_cast<int16_t>(
+      centerX -
+      8
+    );
+
+  for (
+    int16_t y = 0;
+    y < 16;
+    ++y
+  ) {
+    const uint16_t bits =
+      rows[y];
+
+    for (
+      int16_t x = 0;
+      x < 16;
+      ++x
+    ) {
+      if (
+        bits &
+        (
+          0x8000u >>
+          x
+        )
+      ) {
+        oled.drawPixel(
+          left + x,
+          topY + y,
+          SSD1306_WHITE
+        );
+      }
+    }
+  }
+}
+
+void drawCaptureAnimationGraphic(
+  Adafruit_SSD1306& oled,
+  bool successResult
+) {
+  oled.clearDisplay();
+  oled.setTextSize(
+    1
+  );
+  oled.setTextColor(
+    SSD1306_WHITE
+  );
+
+  const int16_t centerX =
+    static_cast<int16_t>(
+      64 +
+      (
+        successResult
+          ? 0
+          : captureBallOffsetX()
+      )
+    );
+
+  drawCaptureBallIcon(
+    oled,
+    centerX,
+    24
+  );
+
+  oled.drawLine(
+    46,
+    43,
+    82,
+    43,
+    SSD1306_WHITE
+  );
+
+  if (
+    successResult
+  ) {
+    // 성공 직후의 작은 "딸깍" 느낌을 주는 정적 반짝임.
+    oled.drawPixel(
+      48,
+      22,
+      SSD1306_WHITE
+    );
+    oled.drawPixel(
+      80,
+      22,
+      SSD1306_WHITE
+    );
+    oled.drawPixel(
+      64,
+      18,
+      SSD1306_WHITE
+    );
+  }
+
+  oled.display();
 }
 
 void initGameState() {
@@ -1835,6 +2089,9 @@ void init() {
 
   battleActionIndex = 0;
   hitEffect = false;
+  captureAnimationStartedAt = 0;
+  captureAnimationShakeCount = 0;
+  captureAnimationVisualFrame = 0xff;
   resetBattleCommandUi();
   resetBattleBallUi();
   battleMoveSlot = 0;
@@ -1987,6 +2244,34 @@ void drawDeskPet() {
 void drawGameGraphics() {
   if (
     screen ==
+    GameScreen::CaptureAnimation
+  ) {
+    drawCaptureAnimationGraphic(
+      Displays::desk(),
+      false
+    );
+
+    graphicsDirty = false;
+
+    return;
+  }
+
+  if (
+    screen ==
+    GameScreen::CaptureSuccess
+  ) {
+    drawCaptureAnimationGraphic(
+      Displays::desk(),
+      true
+    );
+
+    graphicsDirty = false;
+
+    return;
+  }
+
+  if (
+    screen ==
     GameScreen::Battle
   ) {
     drawBattleGraphic(
@@ -2057,6 +2342,31 @@ void drawGameTextScreen() {
       0,
       40,
       "OK 확인"
+    );
+
+    oled.display();
+
+    return;
+  }
+
+  if (
+    screen ==
+    GameScreen::CaptureAnimation
+  ) {
+    drawUtf8Text(
+      oled,
+      0,
+      0,
+      captureBallName(
+        battleCaptureReport.ball
+      )
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      24,
+      "포획 중..."
     );
 
     oled.display();
@@ -2465,6 +2775,44 @@ void updatePokemonAnimation(
   DeviceMode deviceMode
 ) {
   if (
+    screen ==
+    GameScreen::CaptureAnimation
+  ) {
+    const unsigned long elapsed =
+      millis() -
+      captureAnimationStartedAt;
+
+    if (
+      elapsed >=
+      captureAnimationDuration()
+    ) {
+      finishCaptureAnimation();
+
+      if (
+        deviceMode ==
+        MODE_GAME
+      ) {
+        drawGameTextScreen();
+      }
+    } else {
+      const uint8_t frame =
+        captureVisualFrameForElapsed(
+          elapsed
+        );
+
+      if (
+        frame !=
+        captureAnimationVisualFrame
+      ) {
+        captureAnimationVisualFrame =
+          frame;
+
+        graphicsDirty = true;
+      }
+    }
+  }
+
+  if (
     deviceMode ==
       MODE_GAME &&
     hitEffect
@@ -2506,7 +2854,11 @@ void updatePokemonAnimation(
       screen ==
         GameScreen::WildEncounter ||
       screen ==
-        GameScreen::Battle
+        GameScreen::Battle ||
+      screen ==
+        GameScreen::CaptureAnimation ||
+      screen ==
+        GameScreen::CaptureSuccess
     )
   ) {
     return;
@@ -2548,6 +2900,16 @@ void updatePokemonAnimation(
 void handleButton(
   ButtonEvent button
 ) {
+  if (
+    screen ==
+    GameScreen::CaptureAnimation
+  ) {
+    // 판정/저장은 이미 끝난 상태다. 연출 중 입력은 결과를 건너뛰지 않는다.
+    drawGameTextScreen();
+
+    return;
+  }
+
   if (
     screen ==
     GameScreen::RunSuccess
@@ -2890,36 +3252,25 @@ void handleButton(
                 hitEffect = false;
 
                 if (
+                  captureReport.opponentActed
+                ) {
+                  battleReport.actions[0] =
+                    captureReport.opponentAction;
+
+                  battleReport.count = 1;
+                }
+
+                // G5-B.1:
+                // 포획 판정과 실패 반격까지 저장된 뒤에만 transient 흔들림 연출을 시작한다.
+                // 성공은 3회, 실패는 1~2회 흔든 뒤 기존 결과 UI로 이어진다.
+                if (
                   captureReport.captured
                 ) {
-                  // G5-B에서는 성공 판정과 결과 UI까지만 담당한다.
-                  // 실제 소유/Party/Box/Pokedex 반영은 G5-C에서 연결한다.
-                  screen =
-                    GameScreen::CaptureSuccess;
-
                   resetBattleCommandUi();
                   resetBattleBallUi();
-
-                  graphicsDirty = true;
-                } else {
-                  if (
-                    captureReport.opponentActed
-                  ) {
-                    battleReport.actions[0] =
-                      captureReport.opponentAction;
-
-                    battleReport.count = 1;
-                  }
-
-                  // 실패 안내를 먼저 보여주고 OK에서 저장된 상대 행동을 재생한다.
-                  battleActionIndex =
-                    battleReport.count;
-
-                  battleUiMode =
-                    BattleUiMode::CaptureFailed;
-
-                  graphicsDirty = true;
                 }
+
+                beginCaptureAnimation();
               }
             }
           }

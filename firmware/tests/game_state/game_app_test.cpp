@@ -3,6 +3,7 @@
 #include "Preferences.h"
 
 #include <Adafruit_SSD1306.h>
+#include <Arduino.h>
 
 #include <cassert>
 #include <cstdio>
@@ -283,6 +284,56 @@ void finishFeedback() {
   assert(
     FakeNvs::writes ==
     writes
+  );
+}
+
+void finishCaptureAnimation(
+  const char* expectedResult
+) {
+  assert(
+    visible(
+      "포획 중..."
+    )
+  );
+
+  const unsigned writes =
+    FakeNvs::writes;
+
+  const unsigned draws =
+    deskOled.draws;
+
+  // 성공 3회 흔들림도 충분히 끝나는 시간까지 GAME loop를 진행한다.
+  int steps = 0;
+
+  while (
+    !visible(
+      expectedResult
+    ) &&
+    steps++ <
+      24
+  ) {
+    hostMillis +=
+      150;
+
+    GameApp::updatePokemonAnimation(
+      MODE_GAME
+    );
+  }
+
+  assert(
+    visible(
+      expectedResult
+    )
+  );
+
+  assert(
+    FakeNvs::writes ==
+    writes
+  );
+
+  assert(
+    deskOled.draws >
+    draws
   );
 }
 
@@ -1822,6 +1873,9 @@ int main() {
     ) &&
     !visible(
       "포획 성공!"
+    ) &&
+    !visible(
+      "포획 중..."
     )
   );
 
@@ -1849,13 +1903,14 @@ int main() {
 
   assert(
     visible(
-      "포획 실패!"
+      "몬스터볼"
     ) &&
     visible(
-      "상대가 공격한다"
+      "포획 중..."
     )
   );
 
+  // 저장된 결과는 연출 중에도 이미 적용되어 있다.
   assert(
     GameApp::state().battle.status ==
       BattleStatus::Active
@@ -1878,6 +1933,17 @@ int main() {
 
   const unsigned afterFailedCaptureWrites =
     FakeNvs::writes;
+
+  // 실패는 1~2회 흔들린 뒤 기존 실패 안내로 이어진다.
+  finishCaptureAnimation(
+    "포획 실패!"
+  );
+
+  assert(
+    visible(
+      "상대가 공격한다"
+    )
+  );
 
   GameApp::handleButton(
     BUTTON_OK
@@ -1961,10 +2027,21 @@ int main() {
 
   assert(
     visible(
-      "꼬렛"
+      "몬스터볼"
     ) &&
     visible(
-      "포획 성공!"
+      "포획 중..."
+    )
+  );
+
+  // 성공은 3회 흔들린 뒤 결과 화면으로 넘어간다.
+  finishCaptureAnimation(
+    "포획 성공!"
+  );
+
+  assert(
+    visible(
+      "꼬렛"
     ) &&
     visible(
       "OK 확인"
@@ -2052,6 +2129,6 @@ int main() {
   );
 
   std::puts(
-    "PASS app G5-B: command menu, Fight/Run, ball selection, capture success/failure, counterattack, reboot and atomic save"
+    "PASS app G5-B.1: capture shake animation, command menu, Fight/Run, capture success/failure, counterattack, reboot and atomic save"
   );
 }
