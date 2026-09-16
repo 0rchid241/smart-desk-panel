@@ -20,6 +20,8 @@ Arduino IDE에서 상위 `smart_desk_esp32.ino`를 열어 빌드합니다.
 | `game/save_data` | 플랫폼 독립적인 GameSave와 버전/CRC를 포함한 필드별 직렬화 |
 | `game/save_storage` | ESP32 Preferences 어댑터, 게임 전용 A/B 저장 및 복구 |
 | `game/exploration` | epoch 인자를 받는 탐험 세션 검증·시작·완료·남은 시간 계산 |
+| `game/encounter` | 공개 테스트 조우 확정, 검증, 탐험 정보 기반 결정적 seed |
+| `game/type`, `game/move`, `game/battle` | 플랫폼 독립 타입 상성, 기술 fixture, 영속 1:1 전투와 턴 계산 |
 
 가변 상태는 각 `.cpp`의 익명 namespace 안에 둡니다. 일정 조회는 복사 대신
 `const ScheduleEvent&`를 반환하며, 조회 인덱스와 참조는 동기화 이후 다시 얻습니다.
@@ -250,3 +252,124 @@ MSVC C++17 `/W4 /WX` 빌드와 모든 테스트가 통과했습니다.
   `ExplorationStatus::Complete`입니다. 조우/종 선택/보상/EXP/배틀/포획은 구현하지 않았습니다.
 - 기존 시간 API는 실제 NTP 성공 이력 대신 epoch 하한으로 유효성을 판단하고,
   기존 NTP/Calendar 동기화는 동기 호출입니다. 해당 동작은 이번 단계에서 변경하지 않았습니다.
+
+## Phase G4 — Battle Vertical Slice
+
+G3의 탐험/야생 조우에 실제 1:1 전투를 연결합니다. G4 요구사항에 따라 기존 데이터
+모델 문서의 선택적 전투 취소 정책보다 **전투 재부팅 복원**을 우선합니다.
+
+### 코어와 상태 전이
+
+- `type.*`: None + 18타입. 상성은 4=1배의 정수(0/1/2/4/8/16)이며,
+  잘못된 타입/중복 방어 타입은 0을 반환합니다. 두 번째 None은 단일 타입입니다.
+- `move.*`: 84 전기쇼크(특수 40/100/30), 45 울음소리(변화 0/100/40),
+  33 몸통박치기(물리 40/100/35), 21 힘껏치기(물리 80/75/20) fixture.
+  숫자는 위력/명중률/PP입니다. 21은 명중 테스트에도 사용하며 초기 파트너의 84/45는 유지합니다.
+  울음소리는 PP와 턴만 소비하고 능력치 랭크/상태이상은 적용하지 않습니다.
+- `BattleState`: None/Active/Won/Lost, playerId, 야생 종/폼/레벨/성별/shiny,
+  야생 기술 4개, 양쪽 HP/PP, turn, rngState. 영구 파티 개체와 전투 HP/PP는 분리합니다.
+  플레이어 종/레벨/기술은 playerId가 가리키는 partner에서 읽습니다.
+- 야생 기술은 종별 fixture로 확정합니다. 야생 개체에는 영구 instanceId를 배정하지 않습니다.
+- 조우 OK는 candidate에서 Battle 생성 + Exploration Idle + Encounter None을 함께 저장합니다.
+  실패하면 기존 조우가 유지됩니다. HP가 이미 0인 구세이브 파트너는 즉시 Lost로 들어가
+  결과 확인으로 정상 회복할 수 있습니다.
+- 턴: 사용 가능한 기술 선택 → 야생 공격 기술 우선 선택 → Speed 순서(동률 RNG) →
+  선공 → 기절 검사 → 살아 있으면 후공 → turn 증가 → 한 번 저장.
+  HP/PP/RNG/turn은 성공 시에만 RAM에 반영합니다. update/모드 전환/그리기는 턴을 진행하지 않습니다.
+- xorshift32 상태를 저장합니다. 초기 seed는 탐험 hash, partner ID, 야생 정보 조합이며
+  0은 고정 비영 seed로 대체합니다. 명중, 피해량 85~100%, 동률 순서에 같은 RNG를 사용합니다.
+- 데미지는 `((2*Lv/5+2)*Power*Attack/Defense/50+2)`를 기반으로 STAB 1.5배,
+  타입 상성, 난수 배율을 적용합니다. 물리/특수 능력치를 구분하고 uint64 중간값을 사용합니다.
+  무효 상성은 0, 그 외 최소 1, 최종 uint16 범위를 초과하면 포화합니다.
+- PP 0 기술은 건너뛰며 모두 소진하면 무속성 발버둥(위력 50/명중 100, 반동 없음)을 사용합니다.
+  턴 카운터는 uint32 최대치에서 포화하여 overflow나 진행 불능을 피합니다.
+- Won은 야생 HP=0/플레이어 생존/turn>0, Lost는 플레이어 HP=0/야생 생존입니다.
+  결과 OK는 partner를 최대 HP로 회복하고 Battle None을 한 번 저장합니다. 실패 시 결과 유지.
+  영구 개체의 EXP/레벨/친밀도/도감에 전투 보상을 적용하지 않습니다.
+- None 전투는 모든 필드가 canonical default입니다. 전투가 있으면 탐험 Idle/조우 None만
+  허용하며, player ID, 종/폼/레벨/성별, HP 범위, move/PP, RNG 비영 값을 검증합니다.
+  구버전 비전투 상태 조합은 이전 규칙을 유지하여 마이그레이션 중 데이터를 잃지 않습니다.
+
+### v4 wire format / 이전
+
+namespace `pokemon_g1`, `save_a`/`save_b`, 18바이트 헤더, CRC32, A/B readback은 유지합니다.
+G3 payload 뒤에 **40바이트 Battle record**를 추가합니다. 전부 명시적 little-endian입니다.
+
+| Battle offset | 필드 | bytes |
+| --- | --- | ---: |
+| 0 | BattleStatus | 1 |
+| 1 | playerId | 4 |
+| 5 | wild status/speciesId/formId/level/gender/shiny | 7 |
+| 12 | wildMoves[4] | 8 |
+| 20 | player currentHp + pp[4] | 6 |
+| 26 | opponent currentHp + pp[4] | 6 |
+| 32 | turn | 4 |
+| 36 | rngState | 4 |
+
+총 레코드 크기는 1마리 **506바이트**, 3마리 **554바이트**입니다.
+shiny bool은 0/1 외 값도 CRC가 맞더라도 거부합니다.
+
+- v1: 파티/진행/도감 유지, 탐험 Idle/조우 None/전투 None 추가.
+- v2: 기존 탐험 유지, 조우 None/전투 None 추가.
+- v3: 기존 탐험/조우 유지, 전투 None 추가.
+- v4: 전투 HP/PP/turn/RNG/야생 정보를 그대로 복원.
+- 이전 버전은 로드 후 비활성 슬롯에 v4를 저장하며 실패해도 원본과 RAM 상태를 유지합니다.
+  지원하지 않는 미래 버전/읽기 실패 시 기존 데이터를 덮어쓰지 않는 정책도 동일합니다.
+
+### OLED / 조작
+
+복원 우선순위: Battle → Encounter Ready → 탐험 진행/완료 → Home.
+전투 OLED 1은 상대를 오른쪽 위, partner를 왼쪽 아래에 표시합니다.
+기존 48x48 야생 sprite가 있으면 24x24로 화면에서만 축소하며 원본은 변경하지 않습니다.
+없으면 이름/YOU/WILD/위치 표시로 양 진영을 구분합니다.
+OLED 2는 상대 이름/Lv, 상대 HP, YOU HP, 선택 기술, PP를 표시합니다.
+한글 y=0/34의 16px 행과 ASCII y=16/24/56의 8px 행으로 구성합니다.
+LEFT/RIGHT는 사용 가능한 기술 순환, OK는 턴 실행입니다. 별도 메시지 대기 없이
+HP/PP 갱신 후 선택으로 복귀하고 기절 시 `전투 승리!`/`쓰러졌다...`를 표시합니다.
+저장 실패는 오류/OK 재시도로 알리며 결과 화면에서 OK를 누르면 Home으로 돌아갑니다.
+알림 우선순위/버튼 chord/핀은 진입점의 기존 라우팅을 사용합니다.
+전투/조우 정적 그래픽 제한은 GAME에서만 적용하여 DESK Pet 애니메이션은 계속됩니다.
+
+### 자동 검증과 실기 확인
+
+`powershell -ExecutionPolicy Bypass -File .\firmware\tests\game_state\run.ps1`
+
+MSVC C++17 `/W4 /WX`로 기존 코어/storage/탐험/조우 회귀, 독립 v1/v2/v3 레코드 이전,
+상성/물리/특수/STAB/명중과 빗나감/PP/선공 기절/동률/Won/Lost/전투 왕복을 검사합니다.
+실제 GameApp에서는 조우 시작/턴/결과 확인의 저장 실패, 재부팅, 버튼과 화면 복구를 검사합니다.
+애셋 없는 소스와 저작물 없는 합성 도형 fixture 소스를 별도로 빌드하여
+ASCII/한글/pixel 경계 및 조우/전투 중 DESK 애니메이션을 검증합니다.
+
+실기 순서:
+
+1. ESP32 Dev Module / Huge APP으로 컴파일 후 사용자가 업로드합니다(NVS 지우기 금지).
+2. 기존 파트너/STATUS가 유지되고 이전 저장이 v4로 로드되는지 확인합니다.
+3. GAME → 탐험 → 테스트 초원 → 15초 → 조우 → OK로 전투에 진입합니다.
+4. L/R로 전기쇼크/울음소리를 선택하고 OK로 HP/PP가 갱신되는지 확인합니다.
+5. Active 중 재부팅하여 GAME 복귀 후 상대/HP/PP가 같은지 확인합니다.
+6. 전투 중 DESK 전환, 펫/타이머 사용, 알림 닫기, GAME 복귀를 확인합니다.
+7. 전기쇼크로 승리하거나 울음소리를 반복해 패배한 뒤 결과 화면에서 재부팅합니다.
+8. 동일 결과 복원 → OK → Home/HP 완전 회복 → 재탐험 시 PP 초기화를 확인합니다.
+
+G5 이후 범위: 포획, EXP/레벨업, 진화, 전체 콘텐츠, 복잡한 상태이상/기술 효과.
+
+### G4 실행 결과 (2026-09-16)
+
+- 위 PowerShell 회귀 명령: 코어, 저장, 탐험, 조우, v1/v2/v3 이전,
+  전투, fallback GameApp, 합성 애셋 GameApp 모두 PASS. MSVC `/W4 /WX` 통과.
+- 설치된 Arduino CLI: `C:/Users/first/AppData/Local/Programs/Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe`.
+- 실제 전체 컴파일/링크 명령(저장소 루트, PowerShell):
+
+```powershell
+& 'C:/Users/first/AppData/Local/Programs/Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe' compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --build-path C:/smart-desk-panel/build/firmware-g4 firmware/smart_desk_esp32
+& 'C:/Users/first/AppData/Local/Programs/Arduino IDE/resources/app/lib/backend/resources/arduino-cli.exe' compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --build-path C:/smart-desk-panel/build/firmware-g4-fallback build/g4-fallback-source/smart_desk_esp32
+```
+
+| 최종 빌드 | Flash | 전역 RAM | 결과 |
+| --- | ---: | ---: | --- |
+| 로컬 애셋 포함 | 1,465,596 bytes / 3,145,728 (46%) | 52,152 bytes (15%) | PASS |
+| 애셋 제외 복사본 | 1,462,688 bytes / 3,145,728 (46%) | 52,144 bytes (15%) | PASS |
+
+fallback은 ignored `build/` 아래 별도 소스 복사본에서 `local_game_assets`를 제외했습니다.
+두 컴파일 소스 snapshot을 최종 게임 소스와 대조했고, fallback의 컴파일 의존 파일에도
+로컬 애셋 헤더가 없음을 확인했습니다. `git diff --check` 통과. 업로드/실기 검증은 미실행.

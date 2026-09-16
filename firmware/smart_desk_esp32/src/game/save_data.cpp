@@ -32,7 +32,7 @@ bool serialize(const GameSave& save, uint8_t* output, size_t capacity, size_t& w
     save.state.party.count * POKEMON_RECORD_SIZE +
     3 * POKEDEX_BYTES +
     EXPLORATION_RECORD_SIZE +
-    ENCOUNTER_RECORD_SIZE;
+    ENCOUNTER_RECORD_SIZE + BATTLE_RECORD_SIZE;
   if (capacity < size) return false;
   uint8_t* p = output;
   for (char c : {'P', 'K', 'D', 'G'}) *p++ = static_cast<uint8_t>(c);
@@ -69,6 +69,17 @@ bool serialize(const GameSave& save, uint8_t* output, size_t capacity, size_t& w
   put(p, encounter.level, 1);
   put(p, static_cast<uint8_t>(encounter.gender), 1);
   put(p, encounter.shiny ? 1u : 0u, 1);
+  const auto& b = save.state.battle;
+  put(p, static_cast<uint8_t>(b.status), 1); put(p, b.playerId, 4);
+  put(p, static_cast<uint8_t>(b.wild.status), 1); put(p, b.wild.speciesId, 2);
+  put(p, b.wild.formId, 1); put(p, b.wild.level, 1);
+  put(p, static_cast<uint8_t>(b.wild.gender), 1); put(p, b.wild.shiny ? 1u : 0u, 1);
+  for (auto id : b.wildMoves) put(p, id, 2);
+  for (const auto* c : {&b.player, &b.opponent}) {
+    put(p, c->currentHp, 2);
+    for (auto pp : c->pp) put(p, pp, 1);
+  }
+  put(p, b.turn, 4); put(p, b.rngState, 4);
   p = output + 14;
   put(p, checksum(output, size), 4);
   written = size;
@@ -89,6 +100,7 @@ DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output) 
   if (
     candidate.saveVersion != 1 &&
     candidate.saveVersion != 2 &&
+    candidate.saveVersion != 3 &&
     candidate.saveVersion != SAVE_VERSION)
     return DecodeResult::UnsupportedVersion;
   const size_t explorationBytes =
@@ -99,6 +111,7 @@ DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output) 
     candidate.saveVersion >= 3
     ? ENCOUNTER_RECORD_SIZE
     : 0;
+  const size_t battleBytes = candidate.saveVersion >= 4 ? BATTLE_RECORD_SIZE : 0;
   if (length < SAVE_HEADER_SIZE + 15 + 3 * POKEDEX_BYTES || length > SAVE_MAX_SIZE)
     return DecodeResult::Invalid;
   auto& progress = candidate.state.progress;
@@ -109,7 +122,7 @@ DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output) 
   candidate.state.party.count = static_cast<uint8_t>(get(p, 1));
   if (candidate.state.party.count > PARTY_CAPACITY ||
       length != SAVE_HEADER_SIZE + 15 + candidate.state.party.count * POKEMON_RECORD_SIZE +
-                3 * POKEDEX_BYTES + explorationBytes + encounterBytes) return DecodeResult::Invalid;
+                3 * POKEDEX_BYTES + explorationBytes + encounterBytes + battleBytes) return DecodeResult::Invalid;
   for (uint8_t i = 0; i < candidate.state.party.count; ++i) {
     auto& m = candidate.state.party.members[i];
     m.instanceId = get(p, 4); m.speciesId = static_cast<SpeciesId>(get(p, 2));
@@ -139,7 +152,27 @@ DecodeResult deserialize(const uint8_t* input, size_t length, GameSave& output) 
     encounter.formId = static_cast<FormId>(get(p, 1));
     encounter.level = static_cast<uint8_t>(get(p, 1));
     encounter.gender = static_cast<Gender>(get(p, 1));
-    encounter.shiny = get(p, 1) != 0;
+    const auto shiny = get(p, 1);
+    if (shiny > 1) return DecodeResult::Invalid;
+    encounter.shiny = shiny != 0;
+  }
+  if (candidate.saveVersion >= 4) {
+    auto& b = candidate.state.battle;
+    b.status = static_cast<BattleStatus>(get(p, 1)); b.playerId = get(p, 4);
+    b.wild.status = static_cast<EncounterStatus>(get(p, 1));
+    b.wild.speciesId = static_cast<SpeciesId>(get(p, 2));
+    b.wild.formId = static_cast<FormId>(get(p, 1));
+    b.wild.level = static_cast<uint8_t>(get(p, 1));
+    b.wild.gender = static_cast<Gender>(get(p, 1));
+    const auto shiny = get(p, 1);
+    if (shiny > 1) return DecodeResult::Invalid;
+    b.wild.shiny = shiny != 0;
+    for (auto& id : b.wildMoves) id = static_cast<MoveId>(get(p, 2));
+    for (auto* c : {&b.player, &b.opponent}) {
+      c->currentHp = static_cast<uint16_t>(get(p, 2));
+      for (auto& pp : c->pp) pp = static_cast<uint8_t>(get(p, 1));
+    }
+    b.turn = get(p, 4); b.rngState = get(p, 4);
   }
   if (!isValidState(candidate.state)) return DecodeResult::Invalid;
   output = candidate;

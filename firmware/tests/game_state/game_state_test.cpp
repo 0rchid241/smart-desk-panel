@@ -66,7 +66,7 @@ void codecTests() {
   save.state.progress.playTimeSeconds = 987654;
   auto bytes = encode(save);
   assert(bytes.size() == SAVE_MAX_SIZE);
-  assert(bytes[0] == 'P' && bytes[4] == 3 && bytes[5] == 0);
+  assert(bytes[0] == 'P' && bytes[4] == SAVE_VERSION && bytes[5] == 0);
   assert(bytes[6] == 0x78 && bytes[7] == 0x56 && bytes[8] == 0x34 && bytes[9] == 0x12);
   GameSave decoded;
   assert(deserialize(bytes.data(), bytes.size(), decoded) == DecodeResult::Ok);
@@ -87,7 +87,7 @@ void codecTests() {
   }
   auto broken = bytes; broken.push_back(0);
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::Invalid);
-  broken = bytes; broken[4] = 4; updateCrc(broken);
+  broken = bytes; broken[4] = SAVE_VERSION + 1; updateCrc(broken);
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::UnsupportedVersion);
   broken = bytes; broken[32] = 4; updateCrc(broken); // party count
   assert(deserialize(broken.data(), broken.size(), decoded) == DecodeResult::Invalid);
@@ -148,7 +148,7 @@ void storageTests() {
   assert(GameSaveStorage::save(rebooted));
   assert(GameSaveStorage::load(rebooted) == LoadResult::Loaded);
 
-  auto future = encode(rebooted); future[4] = 4; updateCrc(future);
+  auto future = encode(rebooted); future[4] = SAVE_VERSION + 1; updateCrc(future);
   FakeNvs::data["pokemon_g1/save_b"] = future;
   const auto before = FakeNvs::data;
   assert(GameSaveStorage::load(rebooted) == LoadResult::UnsupportedVersion);
@@ -199,14 +199,15 @@ std::vector<uint8_t> legacyRecord(const GameSave& save) {
   return bytes;
 }
 
-// Frozen G2 layout:
-// current v3 record에서 마지막 Encounter 필드만 제거하여
-// 실제 v2 형태를 재현한다.
+// Frozen G2 layout: 현재 serializer와 독립적으로 G1 뒤에 15바이트를 붙인다.
 std::vector<uint8_t> legacyV2Record(const GameSave& save) {
-  auto bytes =encode(save);
-  assert(bytes.size() >= ENCOUNTER_RECORD_SIZE);
-  // v2에는 EncounterState가 없었다.
-  bytes.resize(bytes.size() - ENCOUNTER_RECORD_SIZE);
+  auto bytes = legacyRecord(save);
+  const auto& s = save.state.exploration;
+  auto append = [&](uint64_t value, unsigned count) {
+    for (unsigned i = 0; i < count; ++i) bytes.push_back(static_cast<uint8_t>(value >> (8 * i)));
+  };
+  append(static_cast<uint8_t>(s.status),1); append(s.regionId,2);
+  append(s.startedAtEpoch,8); append(s.durationSeconds,4);
   // save version = 2
   bytes[4] = 2;
   bytes[5] = 0;
@@ -264,7 +265,7 @@ void explorationTests() {
   // Correct CRC does not bypass exploration field validation.
   for (size_t offset : {size_t(0), size_t(1), size_t(3), size_t(11)}) {
     auto invalid = bytes;
-    const size_t position = bytes.size() - ENCOUNTER_RECORD_SIZE - EXPLORATION_RECORD_SIZE;
+    const size_t position = bytes.size() - BATTLE_RECORD_SIZE - ENCOUNTER_RECORD_SIZE - EXPLORATION_RECORD_SIZE;
     if (offset == 0) invalid[position] = 9;
     if (offset == 1) invalid[position + 1] = 2;
     if (offset == 3) for (size_t i = 0; i < 8; ++i) invalid[position + 3 + i] = 0;
@@ -325,9 +326,9 @@ void encounterTests() {
 
   // CRC가 정상이어도 의미적으로 잘못된 Encounter는 거부
   const size_t position =
-    bytes.size() - ENCOUNTER_RECORD_SIZE;
+    bytes.size() - BATTLE_RECORD_SIZE - ENCOUNTER_RECORD_SIZE;
 
-  for (int test = 0; test < 4; ++test) {
+  for (int test = 0; test < 5; ++test) {
     auto invalid = bytes;
 
     if (test == 0) {
@@ -346,6 +347,7 @@ void encounterTests() {
     if (test == 3) {
       invalid[position + 5] = 9;  // invalid gender
     }
+    if (test == 4) invalid[position + 6] = 2; // bool은 0/1만 허용.
 
     updateCrc(invalid);
 
@@ -530,10 +532,13 @@ void v2MigrationTests() {
   assert(rebooted.state.exploration.status == ExplorationStatus::Exploring);
   assert(rebooted.state.exploration.startedAtEpoch == start);
   assert(rebooted.state.encounter.status == EncounterStatus::None);
-  std::puts("PASS v2 migration: exploration preserved, empty encounter, safe v3 upgrade");
+  assert(rebooted.state.battle.status == BattleStatus::None);
+  std::puts("PASS v2 migration: exploration preserved, empty encounter/battle, safe current-version upgrade");
 }
 
-int main() { 
+void battleTests();
+int main() {
+  battleTests();
   codecTests();
   storageTests();
   explorationTests();

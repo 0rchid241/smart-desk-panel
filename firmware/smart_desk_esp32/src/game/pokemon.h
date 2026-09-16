@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "type.h"
 
 namespace PokemonGame {
 using SpeciesId = uint16_t;
@@ -12,11 +13,13 @@ struct Stats {
   uint16_t hp, attack, defense, spAttack, spDefense, speed;
 };
 
-// G1 static fixture only. No battle, learnset or full content tables yet.
+// 공개 Vertical Slice 종 fixture. 전체 콘텐츠/learnset 테이블은 아직 없다.
 struct PokemonSpecies {
   SpeciesId speciesId;
   const char* name;
   Stats baseStats;
+  Type primaryType;
+  Type secondaryType;
 };
 
 struct PokemonInstance {

@@ -2,6 +2,7 @@
 #include "pokemon.h"
 #include "exploration.h"
 #include "encounter.h"
+#include "battle.h"
 #include <cstddef>
 
 namespace PokemonGame {
@@ -31,6 +32,7 @@ struct GameState {
   PokedexState pokedex;
   ExplorationSession exploration;
   EncounterState encounter;
+  BattleState battle;
 };
 
 bool dexContains(const uint8_t* bits, SpeciesId speciesId);

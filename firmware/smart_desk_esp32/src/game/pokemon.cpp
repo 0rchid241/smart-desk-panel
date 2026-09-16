@@ -1,4 +1,5 @@
 #include "pokemon.h"
+#include "move.h"
 
 namespace PokemonGame {
 namespace {
@@ -6,19 +7,19 @@ namespace {
 const PokemonSpecies pidgey = {
   16,
   "구구",
-  {40, 45, 40, 35, 35, 56}
+  {40, 45, 40, 35, 35, 56}, Type::Normal, Type::Flying
 };
 
 const PokemonSpecies rattata = {
   19,
   "꼬렛",
-  {30, 56, 35, 25, 35, 72}
+  {30, 56, 35, 25, 35, 72}, Type::Normal, Type::None
 };
 
 const PokemonSpecies pikachu = {
   25,
   "피카츄",
-  {35, 55, 40, 50, 50, 90}
+  {35, 55, 40, 50, 50, 90}, Type::Electric, Type::None
 };
 
 uint16_t stat(uint16_t base, uint8_t level) {
@@ -65,8 +66,7 @@ bool isValidPokemon(const PokemonInstance& pokemon) {
       static_cast<uint8_t>(pokemon.gender) > 2 ||
       pokemon.currentHp > calculateStats(pokemon).hp) return false;
   for (int i = 0; i < 4; ++i) {
-    // Only the two G1 fixture move IDs (Thunder Shock / Growl) are supported.
-    if (pokemon.moves[i] != 0 && pokemon.moves[i] != 84 && pokemon.moves[i] != 45)
+    if (pokemon.moves[i] != 0 && !findMove(pokemon.moves[i]))
       return false;
     for (int j = 0; j < i; ++j)
       if (pokemon.moves[i] && pokemon.moves[i] == pokemon.moves[j]) return false;

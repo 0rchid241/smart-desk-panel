@@ -692,6 +692,101 @@ int main() {
     EncounterStatus::None
   );
 
+  // G4: 기존 조우 소비 회귀는 이제 Battle 진입까지 검증한다.
+  assert(GameApp::state().battle.status == BattleStatus::Active);
+  assert(GameApp::state().battle.wild.speciesId == firstWildSpecies);
+  assert(GameApp::state().battle.wild.gender == firstWildGender);
+  assert(visible("전기쇼크") && visible("PP 30/30") && visible("YOU HP 18/18"));
+  GameApp::drawGameGraphics();
+  assert(graphicsVisible("YOU") && graphicsVisible("WILD") && graphicsVisible(firstWild->name));
+  GameApp::handleButton(BUTTON_RIGHT);
+  assert(visible("울음소리") && visible("PP 40/40"));
+  GameApp::handleButton(BUTTON_LEFT);
+  assert(visible("전기쇼크"));
+
+  auto stateBytes = [](const GameState& state) {
+    GameSave save; save.state = state;
+    std::vector<uint8_t> bytes(SAVE_MAX_SIZE); size_t size = 0;
+    assert(serialize(save, bytes.data(), bytes.size(), size));
+    bytes.resize(size); return bytes;
+  };
+  GameApp::handleButton(BUTTON_RIGHT); // 변화 기술로 첫 턴 이후 Active 보장.
+  const auto beforeTurn = stateBytes(GameApp::state());
+  auto expectedTurn = GameApp::state();
+  assert(resolveBattleTurn(expectedTurn, 1));
+  FakeNvs::partialWrite = true;
+  GameApp::handleButton(BUTTON_OK);
+  assert(stateBytes(GameApp::state()) == beforeTurn && visible("SAVE ERROR"));
+  const auto failedTurnWrites = FakeNvs::writes;
+  for (int i = 0; i < 100; ++i) GameApp::update();
+  assert(FakeNvs::writes == failedTurnWrites);
+  FakeNvs::partialWrite = false;
+  GameApp::init(); // 실패한 턴은 재부팅해도 적용되지 않는다.
+  assert(stateBytes(GameApp::state()) == beforeTurn);
+  GameApp::handleButton(BUTTON_RIGHT);
+  GameApp::handleButton(BUTTON_OK);
+  assert(stateBytes(GameApp::state()) == stateBytes(expectedTurn));
+  assert(GameApp::state().battle.turn == 1 && visible("PP 39/40"));
+  const auto afterTurn = stateBytes(GameApp::state());
+  char hpText[32];
+  snprintf(hpText, sizeof(hpText), "YOU HP %u/18",
+    static_cast<unsigned>(GameApp::state().battle.player.currentHp));
+  assert(GameApp::state().battle.player.currentHp < 18 && visible(hpText));
+  GameApp::init(); GameApp::drawGameTextScreen();
+  assert(stateBytes(GameApp::state()) == afterTurn && visible("PP 30/30"));
+  assert(GameApp::state().battle.player.pp[1] == 39);
+  // DESK 표시/복귀는 전투 진행이나 저장을 유발하지 않는다.
+  const auto idleWrites = FakeNvs::writes;
+  GameApp::drawDeskPet(); GameApp::updatePokemonAnimation(MODE_DESK);
+  for (int i = 0; i < 100; ++i) GameApp::update();
+  GameApp::drawGameGraphics(); GameApp::drawGameTextScreen();
+  assert(stateBytes(GameApp::state()) == afterTurn && FakeNvs::writes == idleWrites);
+
+  // 승리와 패배를 확정 상태로 만들되 실제 앱의 턴 입력을 거친다.
+  auto victory = GameApp::state();
+  victory.battle.opponent.currentHp = 1;
+  assert(GameApp::saveState(victory));
+  GameApp::handleButton(BUTTON_OK);
+  assert(GameApp::state().battle.status == BattleStatus::Won && visible("전투 승리!"));
+  GameApp::init(); GameApp::drawGameTextScreen();
+  assert(visible("전투 승리!"));
+  const auto wonBytes = stateBytes(GameApp::state());
+  FakeNvs::partialWrite = true; GameApp::handleButton(BUTTON_OK);
+  assert(stateBytes(GameApp::state()) == wonBytes && visible("OK 재시도"));
+  FakeNvs::partialWrite = false; GameApp::handleButton(BUTTON_OK);
+  assert(GameApp::state().battle.status == BattleStatus::None);
+  assert(partner(GameApp::state())->currentHp == calculateStats(*partner(GameApp::state())).hp);
+
+  auto defeat = GameApp::state();
+  assert(setEncounter(defeat.encounter, 25, 0, 100, Gender::Male, false));
+  assert(startBattle(defeat)); defeat.battle.player.currentHp = 1;
+  assert(GameApp::saveState(defeat));
+  GameApp::init(); GameApp::handleButton(BUTTON_OK);
+  assert(GameApp::state().battle.status == BattleStatus::Lost && visible("쓰러졌다..."));
+  GameApp::init(); GameApp::drawGameTextScreen();
+  assert(visible("쓰러졌다..."));
+  const auto lostBytes = stateBytes(GameApp::state());
+  FakeNvs::partialWrite = true; GameApp::handleButton(BUTTON_OK);
+  assert(stateBytes(GameApp::state()) == lostBytes);
+  FakeNvs::partialWrite = false; GameApp::handleButton(BUTTON_OK);
+  assert(GameApp::state().battle.status == BattleStatus::None);
+  assert(partner(GameApp::state())->currentHp == 18);
+  auto exhausted = GameApp::state();
+  assert(setEncounter(exhausted.encounter,19,0,2,Gender::Male,false));
+  assert(startBattle(exhausted));
+  for (auto& pp : exhausted.battle.player.pp) pp = 0;
+  for (auto& pp : exhausted.battle.opponent.pp) pp = 0;
+  assert(GameApp::saveState(exhausted)); GameApp::init(); GameApp::drawGameTextScreen();
+  assert(visible("발버둥") && visible("PP --"));
+  GameApp::handleButton(BUTTON_LEFT); GameApp::handleButton(BUTTON_RIGHT);
+  assert(visible("발버둥"));
+  for (int i = 0; i < 30 && GameApp::state().battle.status == BattleStatus::Active; ++i)
+    GameApp::handleButton(BUTTON_OK);
+  assert(GameApp::state().battle.status != BattleStatus::Active);
+  GameApp::handleButton(BUTTON_OK);
+  assert(GameApp::state().battle.status == BattleStatus::None && partner(GameApp::state())->currentHp == 18);
+  std::puts("PASS app battle: start/turn/result atomicity, HP/PP UI, navigation, reboot, DESK resume, Won/Lost");
+
   assert(
     visible(
       "피카츄"

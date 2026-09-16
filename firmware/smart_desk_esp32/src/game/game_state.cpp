@@ -41,6 +41,10 @@ GameState createNewGame() {
 }
 
 bool isValidState(const GameState& state) {
+  if (!isValidBattle(state.battle, partner(state))) return false;
+  if (state.battle.status != BattleStatus::None &&
+      (state.exploration.status != ExplorationStatus::Idle ||
+       state.encounter.status != EncounterStatus::None)) return false;
   if (!isValidExploration(state.exploration)) return false;
   if (!isValidEncounter(state.encounter)) return false;
   if (state.party.count == 0 || state.party.count > PARTY_CAPACITY ||
