@@ -646,3 +646,45 @@ build/firmware-g5-c2-b1-fallback)를 재사용했으며, 최종 산출물은 B2 
 fallback은 build/b1-fallback-source/smart_desk_esp32에 local_game_assets를 제외해 복사했고,
 게임 .h/.cpp 파일의 hash 일치를 확인했습니다. 이 RAM 수치는 전역 변수만이며 실행 중 heap/stack
 최대 사용량은 실기 측정 대상입니다. 실제 업로드/format/commit/push는 수행하지 않았습니다.
+
+## Huge APP LittleFS subtype 수정 (ESP32 core 3.3.11)
+
+스케치 루트 `firmware/smart_desk_esp32/partitions.csv`를 프로젝트 파티션 테이블로 사용합니다.
+Arduino IDE에서는 ESP32 Dev Module + Huge APP을 그대로 선택합니다. core 3.3.11 platform.txt의
+prebuild hook은 보드 기본 테이블 → variant 테이블 → sketch-local partitions.csv 순으로 복사하므로
+이 프로젝트의 CSV가 최종 build/partitions.csv를 덮어씁니다. 별도 IDE 설정이나 설치 core 수정은 없습니다.
+
+설치 core의 huge_app.csv와 기존 빌드 산출물은 filesystem subtype이 spiffs(0x82)였습니다.
+하지만 해당 core의 CONFIG_LITTLEFS_SPIFFS_COMPAT는 꺼져 있고, 번들 LittleFS는 littlefs(0x83)를
+찾습니다. 실제 설치된 libjoltwallet__littlefs.a에도 실기 오류와 같은
+`No data partition with subtype "littlefs" found` 메시지가 있습니다.
+라이브러리 컴파일/링크 성공은 실기 partition 검색이나 mount 성공을 검증하지 않기 때문에,
+이전 전체 빌드가 성공해도 실기 mount는 실패할 수 있었습니다.
+
+| name | type/subtype | offset | size |
+| --- | --- | --- | --- |
+| nvs | data/nvs | 0x9000 | 0x5000 |
+| otadata | data/ota | 0xE000 | 0x2000 |
+| app0 | app/ota_0 | 0x10000 | 0x300000 |
+| spiffs | data/littlefs | 0x310000 | 0xE0000 |
+| coredump | data/coredump | 0x3F0000 | 0x10000 |
+
+기존 Huge APP와 비교해 filesystem subtype 하나만 변경합니다. label `spiffs`는
+LittleFS.begin(false)의 기본 partitionLabel과 맞추기 위해 유지합니다. label은 이름이며
+SPIFFS를 사용하는 뜻이 아닙니다. BoxStorage는 계속 LittleFS입니다.
+NVS를 포함한 모든 offset/size/flags는 유지하며 B1 포맷, SAVE_VERSION=5, BoxRoot 및 transaction은
+변경하지 않습니다. 새 CSV 추가 자체는 보드 데이터를 쓰거나 filesystem을 포맷하지 않습니다.
+
+재현: 기존 Arduino CLI 명령의 FQBN `esp32:esp32:esp32:PartitionScheme=huge_app`으로 빌드합니다.
+fallback 소스를 복사할 때도 이 partitions.csv를 함께 복사해야 합니다. 생성된 partitions.csv와
+smart_desk_esp32.ino.partitions.bin의 filesystem subtype이 0x83인지 확인합니다.
+실기 후속 확인 시에는 새 partition table을 포함해 업로드하고 Erase All Flash는 Disabled로 유지해야
+기존 NVS를 보존할 수 있습니다. 이번 작업에서는 보드 upload/format을 실행하지 않았습니다.
+
+검증 결과: host run.ps1 전체 PASS (/W4 /WX), asset/fallback Huge APP 전체 compile/link PASS,
+git diff --check PASS. 두 build/partitions.csv는 sketch-local 파일과 hash가 일치하고,
+두 partitions.bin을 32-byte entry 단위로 판독해 filesystem subtype=0x83,
+나머지 모든 type/subtype/offset/size/flags 보존과 partition MD5를 확인했습니다.
+컴파일러 Flash/RAM은 asset 1,516,976/52,408 bytes, fallback 1,514,092/52,400 bytes입니다.
+partition generator의 name 'spiffs'와 subtype 0x83 불일치 경고는 default label을 유지하기 위한
+의도된 이름/subtype 조합이며 오류가 아닙니다. 저장 코드 수정 및 보드 upload/format은 없습니다.
