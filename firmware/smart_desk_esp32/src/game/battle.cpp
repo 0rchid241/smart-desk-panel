@@ -494,6 +494,9 @@ bool attemptBattleRun(GameState& state, BattleRunReport* report) {
 }
 
 bool canUseCaptureBall(const GameState& state, CaptureBall ball) {
+  // C1에는 Box가 없다. RNG/볼 소비 전에 소유 공간과 다음 ID를 확보한다.
+  if (state.party.count >= PARTY_CAPACITY || state.progress.nextInstanceId == UINT32_MAX)
+    return false;
   if (
     !isValidState(
       state
@@ -670,9 +673,22 @@ bool attemptBattleCapture(
   if (
     captureReport.captured
   ) {
-    // G5-B에서는 포획 판정까지만 구현한다.
-    // G5-C에서 이 wild 정보를 Party/Box/Pokedex에 반영하기 전까지는
-    // 성공 결과를 일시 UI로 보여준 뒤 전투를 종료한다.
+    // 계산용 wildPokemon의 임시 ID를 쓰지 않고 영구 소유 ID를 발급한다.
+    PokemonInstance caught;
+    caught.instanceId = next.progress.nextInstanceId++;
+    caught.speciesId = b.wild.speciesId;
+    caught.formId = b.wild.formId;
+    caught.level = b.wild.level;
+    caught.gender = b.wild.gender;
+    caught.shiny = b.wild.shiny;
+    caught.currentHp = b.opponent.currentHp;
+    caught.exp = 0;
+    caught.friendship = 0; // C1 fixture: 종별 초기 친밀도는 후속 단계에서 정의한다.
+    for (uint8_t i = 0; i < 4; ++i) caught.moves[i] = b.wildMoves[i];
+    next.party.members[next.party.count++] = caught;
+    registerCaught(next.pokedex, caught.speciesId, caught.shiny);
+
+    // 소유/도감/볼 소비와 전투 종료가 같은 후보 상태에 포함된다.
     b =
       BattleState{};
 

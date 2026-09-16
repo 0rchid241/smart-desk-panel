@@ -2016,6 +2016,14 @@ int main() {
 
   enterBag();
 
+  // 일반 볼 성공 RNG 후보도 readback 검증 실패 시 소유/ID/도감에 적용하지 않는다.
+  const auto beforeSuccess = stateBytes(GameApp::state());
+  FakeNvs::corruptWrite = true;
+  GameApp::handleButton(BUTTON_OK);
+  assert(stateBytes(GameApp::state()) == beforeSuccess && visible("SAVE ERROR"));
+  assert(!visible("포획 중...") && !visible("파티에 합류!"));
+  FakeNvs::corruptWrite = false;
+
   GameApp::handleButton(
     BUTTON_OK
   );
@@ -2034,7 +2042,25 @@ int main() {
     )
   );
 
-  // 성공은 3회 흔들린 뒤 결과 화면으로 넘어간다.
+  // 성공은 3회 흔들린 뒤 결과 화면으로 넘어간다(기존 350/420/250ms 유지).
+  const unsigned long animationStart = hostMillis;
+  const auto animationWrites = FakeNvs::writes;
+  for (unsigned shake = 0; shake < 3; ++shake) {
+    hostMillis = animationStart + 350 + shake * 420;
+    GameApp::updatePokemonAnimation(MODE_GAME);
+    assert(visible("포획 중..."));
+    int left = 128;
+    for (const auto& pixel : deskOled.framePixels) if (pixel.first < left) left = pixel.first;
+    assert(left == 53);
+    hostMillis += 120;
+    GameApp::updatePokemonAnimation(MODE_GAME);
+    left = 128;
+    for (const auto& pixel : deskOled.framePixels) if (pixel.first < left) left = pixel.first;
+    assert(left == 59);
+  }
+  hostMillis = animationStart + 350 + 3 * 420 + 249;
+  GameApp::updatePokemonAnimation(MODE_GAME);
+  assert(visible("포획 중...") && FakeNvs::writes == animationWrites);
   finishCaptureAnimation(
     "포획 성공!"
   );
@@ -2044,18 +2070,18 @@ int main() {
       "꼬렛"
     ) &&
     visible(
-      "OK 확인"
+      "파티에 합류!"
     )
   );
 
-  // G5-B는 판정까지만: 실제 소유/도감 반영은 G5-C에서 한다.
+  // C1: 성공 저장 시점에 실제 파티/도감에 반영된다.
   assert(
     GameApp::state().party.count ==
-      partyBeforeCapture
+      partyBeforeCapture + 1
   );
 
   assert(
-    !dexContains(
+    dexContains(
       GameApp::state().pokedex.caught,
       19
     )
@@ -2098,6 +2124,77 @@ int main() {
     FakeNvs::writes >
       beforeCaptureWrites
   );
+
+  // 성공 후보 저장 실패: 소유/도감/ID/마스터볼/RNG 전체가 이전 바이트와 같아야 한다.
+  assert(GameApp::state().party.count == 2 && dexContains(GameApp::state().pokedex.caught,19));
+  assert(!dexContains(GameApp::state().pokedex.shinyCaught,19));
+  auto masterCandidate = GameApp::state();
+  assert(setEncounter(masterCandidate.encounter,16,0,7,Gender::Female,true));
+  assert(startBattle(masterCandidate));
+  masterCandidate.battle.opponent.currentHp = 2;
+  masterCandidate.progress.masterBallCount = 1;
+  assert(GameApp::saveState(masterCandidate)); GameApp::init(); GameApp::drawGameTextScreen();
+  enterBag();
+  for (int i=0;i<3;++i) GameApp::handleButton(BUTTON_RIGHT);
+  assert(visible("마스터볼"));
+  const auto beforeMaster = stateBytes(GameApp::state());
+  const auto nextId = GameApp::state().progress.nextInstanceId;
+  FakeNvs::partialWrite = true;
+  GameApp::handleButton(BUTTON_OK);
+  assert(stateBytes(GameApp::state()) == beforeMaster && visible("SAVE ERROR"));
+  assert(!visible("포획 중...") && !visible("포획 성공!") && !visible("파티에 합류!"));
+  const auto failedMasterWrites = FakeNvs::writes;
+  for (int i=0;i<50;++i) { hostMillis += 100; GameApp::updatePokemonAnimation(MODE_GAME); GameApp::update(); }
+  assert(FakeNvs::writes == failedMasterWrites && stateBytes(GameApp::state()) == beforeMaster);
+  FakeNvs::partialWrite = false;
+  GameApp::handleButton(BUTTON_OK);
+  assert(FakeNvs::writes == failedMasterWrites + 1 && visible("포획 중..."));
+  assert(GameApp::state().party.count == 3 && GameApp::state().progress.nextInstanceId == nextId + 1);
+  const auto& owned = GameApp::state().party.members[2];
+  assert(owned.instanceId == nextId && owned.speciesId == 16 && owned.level == 7);
+  assert(owned.gender == Gender::Female && owned.shiny && owned.currentHp == 2);
+  assert(GameApp::state().progress.masterBallCount == 0 && dexContains(GameApp::state().pokedex.shinyCaught,16));
+  const auto capturedState = GameApp::state();
+  const auto capturedBytes = stateBytes(capturedState);
+  GameApp::handleButton(BUTTON_OK); // 연출 중 확인 입력으로 중복 추가하지 않는다.
+  assert(stateBytes(GameApp::state()) == capturedBytes);
+  GameApp::init(); GameApp::drawGameTextScreen(); // 성공 연출 도중 재부팅.
+  assert(stateBytes(GameApp::state()) == capturedBytes && visible("피카츄") && !visible("포획 중..."));
+  assert(partner(GameApp::state())->instanceId == 1 && GameApp::state().progress.deskPetId == 1);
+
+  auto fullBattle = capturedState;
+  assert(setEncounter(fullBattle.encounter,19,0,2,Gender::Male,false) && startBattle(fullBattle));
+  fullBattle.progress.masterBallCount = 1;
+  assert(GameApp::saveState(fullBattle)); GameApp::init(); GameApp::drawGameTextScreen(); enterBag();
+  const auto fullBytes = stateBytes(GameApp::state());
+  const auto fullWrites = FakeNvs::writes;
+  GameApp::handleButton(BUTTON_OK);
+  assert(visible("파티가 가득 찼다") && visible("박스 준비 중"));
+  GameApp::handleButton(BUTTON_RIGHT); // 안내 중 선택 입력은 무시.
+  for (int i=0;i<30;++i) { GameApp::update(); GameApp::updatePokemonAnimation(MODE_GAME); }
+  assert(stateBytes(GameApp::state()) == fullBytes && FakeNvs::writes == fullWrites);
+  GameApp::handleButton(BUTTON_OK); assert(visible("몬스터볼"));
+  for (int i=0;i<3;++i) GameApp::handleButton(BUTTON_RIGHT);
+  assert(visible("마스터볼")); GameApp::handleButton(BUTTON_OK);
+  assert(visible("파티가 가득 찼다") && stateBytes(GameApp::state()) == fullBytes);
+  assert(FakeNvs::writes == fullWrites);
+  GameApp::init(); GameApp::drawGameTextScreen(); assertCommandScreen();
+  assert(stateBytes(GameApp::state()) == fullBytes);
+
+  auto exhaustedId = createNewGame();
+  assert(setEncounter(exhaustedId.encounter,19,0,2,Gender::Male,false) && startBattle(exhaustedId));
+  exhaustedId.progress.nextInstanceId = UINT32_MAX;
+  assert(GameApp::saveState(exhaustedId)); GameApp::init(); GameApp::drawGameTextScreen(); enterBag();
+  const auto exhaustedBytes = stateBytes(GameApp::state());
+  const auto exhaustedWrites = FakeNvs::writes;
+  GameApp::handleButton(BUTTON_OK);
+  assert(visible("개체 ID 부족") && stateBytes(GameApp::state()) == exhaustedBytes);
+  assert(FakeNvs::writes == exhaustedWrites);
+  GameApp::handleButton(BUTTON_OK); assert(visible("몬스터볼"));
+  // 독립적인 거부 시나리오 후, 앞서 저장 성공한 소유 fixture로 복귀해 재로드 검증.
+  assert(GameApp::saveState(capturedState)); GameApp::init(); GameApp::drawGameTextScreen();
+  assert(stateBytes(GameApp::state()) == capturedBytes);
+  std::puts("PASS app C1: atomic ownership/master retry, exactly-once IDs, full-party no-save, animation/reboot ownership");
 
   const unsigned finalWrites =
     FakeNvs::writes;

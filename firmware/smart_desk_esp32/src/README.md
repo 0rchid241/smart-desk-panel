@@ -418,3 +418,55 @@ SAVE_VERSION=4와 BattleState/codec/storage는 그대로 유지합니다.
 실기: 양쪽 이름/Lv/HP 배치 → 기술 두 줄과 PP → OK 후 행동/피격/피해량 →
 OK로 상대 행동 → 선택 복귀를 확인합니다. 메시지 중 DESK/GAME 전환 및 재부팅,
 승패 결과 재부팅/확인/HP 회복도 확인합니다. 업로드/commit/push는 수행하지 않았습니다.
+
+## Phase G5-C1 — 포획 개체의 파티 소유 반영
+
+기준 main: `0a1e54ccddeb9d4aba7d316048e2bee95f3d0589`.
+Box 없이 빈 파티 슬롯이 있을 때만 포획을 허용합니다.
+
+- `attemptBattleCapture()`의 성공 후보 안에서 nextInstanceId를 새 ID로 발급하고 1 증가,
+  파티 마지막 슬롯에 개체 추가, 도감 등록, 마스터볼 소비, Battle None 처리를 함께 수행합니다.
+- 새 개체는 야생 species/form/level/gender/shiny, 실제 wildMoves 4개와 포획 순간 HP를
+  복사합니다. EXP/친밀도는 0입니다. 계산용 wildPokemon의 임시 ID는 사용하지 않습니다.
+- 기존 파티 순서와 deskPetId는 유지합니다. 중복 종 포획을 허용하고 각 ID는 고유합니다.
+  일반 포획은 shinyCaught를 켜지 않으며 기존 shiny 등록도 지우지 않습니다.
+- `canUseCaptureBall()`에서 파티 3마리 또는 nextInstanceId=UINT32_MAX를 차단합니다.
+  나머지 비정상 ID/상태는 기존 isValidState 검증이 거부합니다.
+  마지막 발급 가능한 ID는 UINT32_MAX-1이며 wrap하지 않습니다.
+- UI의 차단 안내는 transient입니다. `파티가 가득 찼다 / 박스 준비 중` 또는
+  `포획 불가 / 개체 ID 부족`을 표시하고 OK로 볼 선택에 돌아갑니다.
+  이 경로에서는 RNG/볼/반격/Battle/NVS를 변경하지 않습니다.
+- GameApp은 기존 candidate → core → saveState → live 적용 순서를 유지합니다.
+  저장 실패 시 소유/ID/도감/마스터볼/전투/RNG가 모두 유지되며 성공 연출도 시작하지 않습니다.
+- 성공 저장 후 기존 3회 흔들림(350ms 도입 + 3×420ms + 250ms 정지)을 그대로 재생합니다.
+  성공 화면은 종 이름 / 포획 성공! / 파티에 합류! / OK를 표시합니다.
+  OK는 추가 저장 없이 Home으로 돌아갑니다. 연출 중 재부팅해도 새 소유는 유지되며 Home으로 복원합니다.
+- SAVE_VERSION=4, POKEMON_RECORD_SIZE=24, BATTLE_RECORD_SIZE=40, PARTY_CAPACITY=3,
+  namespace `pokemon_g1`과 v1/v2/v3 이전 규칙은 변경하지 않습니다.
+  Box/파티 UI/파트너 변경/성장/포획 확률 및 흔들림 그래픽은 이번 범위가 아닙니다.
+
+검증:
+
+`powershell -ExecutionPolicy Bypass -File .\firmware\tests\game_state\run.ps1`
+
+MSVC `/W4 /WX` 전체 PASS. 신규 소유 필드/HP/moves/ID, 중복 종과 shiny 도감,
+가득 찬 파티의 모든 볼 거부, ID 한계, v4 왕복, 저장 실패/정확히 한 번 재시도,
+성공 연출 중 재부팅, 기존 3회 흔들림 시간/좌우 위치를 검사합니다.
+G1~G4, 도망, 포획 확률/실패 반격, v1~v3 이전, fallback/합성 애셋 앱 회귀도 유지합니다.
+
+실기: 파티에 빈자리가 있는 상태에서 포획 → 3회 흔들림/파티 합류 → OK → 기존 파트너 Home;
+성공 연출 중 재부팅 후 Home; 두 마리 추가 포획으로 파티 3마리 → 다음 전투에서
+일반/마스터볼 시도 시 파티 가득 참 안내 → OK로 볼 선택 복귀를 확인합니다.
+마스터볼이 있는 세이브에서는 성공 때만 1개 줄고 차단 시에는 유지되는지도 확인합니다.
+파티/개체 상세 UI는 C1에 추가하지 않으므로 개별 필드 보존은 자동 테스트로 검증합니다.
+
+ESP32 core 3.3.11 / ESP32 Dev Module / Huge APP 최종 전체 컴파일·링크 PASS:
+
+| G5-C1 빌드 | Flash | 전역 RAM |
+| --- | ---: | ---: |
+| 로컬 애셋 포함 | 1,471,516 bytes (46%) | 52,208 bytes (15%) |
+| 애셋 없는 fallback | 1,468,600 bytes (46%) | 52,200 bytes (15%) |
+
+앞서 기록한 Arduino CLI 명령과 `build/firmware-g4`, `build/firmware-g4-fallback` 경로를 재사용했습니다.
+양쪽 컴파일 snapshot과 최종 게임 소스의 일치 및 fallback 애셋 의존성 부재를 확인했습니다.
+`git diff --check` PASS. 업로드/commit/push는 수행하지 않았습니다.

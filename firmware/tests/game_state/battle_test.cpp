@@ -361,6 +361,71 @@ void capturing() {
   );
 }
 
+void captureOwnership() {
+  static_assert(SAVE_VERSION == 4 && POKEMON_RECORD_SIZE == 24 &&
+    BATTLE_RECORD_SIZE == 40 && PARTY_CAPACITY == 3, "C1 keeps v4 layout");
+  for (bool shiny : {false, true}) {
+    auto state = active(19, 7);
+    state.battle.wild.shiny = shiny;
+    state.battle.opponent.currentHp = 3;
+    state.progress.masterBallCount = 2;
+    const auto before = state;
+    BattleCaptureReport report;
+    assert(attemptBattleCapture(state,CaptureBall::Master,&report) && report.captured);
+    assert(state.party.count == 2 && state.progress.nextInstanceId == before.progress.nextInstanceId + 1);
+    const auto& caught = state.party.members[1];
+    assert(caught.instanceId == before.progress.nextInstanceId);
+    assert(caught.speciesId == before.battle.wild.speciesId && caught.formId == before.battle.wild.formId);
+    assert(caught.level == before.battle.wild.level && caught.gender == before.battle.wild.gender);
+    assert(caught.shiny == shiny && caught.currentHp == 3 && caught.exp == 0 && caught.friendship == 0);
+    for (int i=0;i<4;++i) assert(caught.moves[i] == before.battle.wildMoves[i]);
+    assert(dexContains(state.pokedex.seen,19) && dexContains(state.pokedex.caught,19));
+    assert(dexContains(state.pokedex.shinyCaught,19) == shiny);
+    assert(state.progress.deskPetId == before.progress.deskPetId && partner(state)->instanceId == 1);
+    assert(state.progress.masterBallCount == 1 && state.battle.status == BattleStatus::None);
+    // 포획된 두 번째 슬롯을 제외한 기존 파티 전체를 별도로 비교한다.
+    auto original = before; original.battle = BattleState{};
+    auto prefix = state; prefix.party.count = 1; prefix.progress = original.progress; prefix.pokedex = original.pokedex;
+    assert(snapshot(prefix) == snapshot(original));
+    assert(isValidState(state)); roundtrip(state);
+
+    // 같은 종을 다시 포획하되 일반 개체는 기존 shiny 등록을 지우지 않는다.
+    const auto firstCaughtId = caught.instanceId;
+    assert(setEncounter(state.encounter,19,0,2,Gender::Male,false) && startBattle(state));
+    assert(attemptBattleCapture(state,CaptureBall::Master,&report));
+    assert(state.party.count == 3 && state.party.members[1].instanceId == firstCaughtId);
+    assert(state.party.members[2].instanceId == firstCaughtId + 1);
+    assert(state.party.members[2].speciesId == 19 && !state.party.members[2].shiny);
+    assert(dexContains(state.pokedex.shinyCaught,19) == shiny);
+    assert(isValidState(state)); roundtrip(state);
+
+    // 가득 찬 파티는 모든 볼을 RNG/수량/반격/보고서 변경 없이 거부한다.
+    assert(setEncounter(state.encounter,16,0,3,Gender::Male,false) && startBattle(state));
+    state.progress.ballTier = 2; state.progress.masterBallCount = 2;
+    const auto full = snapshot(state);
+    for (auto ball : {CaptureBall::Poke,CaptureBall::Great,CaptureBall::Ultra,CaptureBall::Master}) {
+      BattleCaptureReport untouched; untouched.chance = 123;
+      assert(!canUseCaptureBall(state,ball));
+      assert(!attemptBattleCapture(state,ball,&untouched));
+      assert(snapshot(state) == full && untouched.chance == 123);
+    }
+  }
+  auto exhaustedId = active(); exhaustedId.progress.nextInstanceId = UINT32_MAX;
+  exhaustedId.progress.masterBallCount = 1;
+  assert(isValidState(exhaustedId));
+  auto old = snapshot(exhaustedId);
+  assert(!attemptBattleCapture(exhaustedId,CaptureBall::Master) && snapshot(exhaustedId) == old);
+  assert(!attemptBattleCapture(exhaustedId,CaptureBall::Poke) && snapshot(exhaustedId) == old);
+  exhaustedId.progress.nextInstanceId = UINT32_MAX - 1;
+  assert(attemptBattleCapture(exhaustedId,CaptureBall::Master));
+  assert(exhaustedId.party.members[1].instanceId == UINT32_MAX - 1);
+  assert(exhaustedId.progress.nextInstanceId == UINT32_MAX && isValidState(exhaustedId));
+  roundtrip(exhaustedId);
+  auto invalidId = active(); invalidId.progress.nextInstanceId = 0;
+  assert(!attemptBattleCapture(invalidId,CaptureBall::Poke) && invalidId.progress.nextInstanceId == 0);
+  std::puts("PASS C1 ownership: wild fields/HP/moves, IDs, duplicate species, dex, full party, overflow, v4 roundtrip");
+}
+
 void validationAndMigration() {
   auto state = active();
   const auto bytes = snapshot(state);
@@ -414,6 +479,7 @@ void validationAndMigration() {
 }
 
 void battleTests() {
+  captureOwnership();
   typeAndDamage();
   turns();
   running();

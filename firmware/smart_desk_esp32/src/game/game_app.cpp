@@ -93,7 +93,8 @@ enum class BattleUiMode : uint8_t {
   BallSelection,
   PartyUnavailable,
   RunFailed,
-  CaptureFailed
+  CaptureFailed,
+  CaptureUnavailable
 };
 
 GameScreen screen = GameScreen::Home;
@@ -1735,6 +1736,13 @@ void drawBattleText(
         oled
       );
       break;
+    case BattleUiMode::CaptureUnavailable:
+      drawUtf8Text(oled, 0, 0, gameSave.state.party.count >= PokemonGame::PARTY_CAPACITY
+        ? "파티가 가득 찼다" : "포획 불가");
+      drawUtf8Text(oled, 0, 24, gameSave.state.party.count >= PokemonGame::PARTY_CAPACITY
+        ? "박스 준비 중" : "개체 ID 부족");
+      drawUtf8Text(oled, 0, 48, "OK 확인");
+      break;
   }
 }
 
@@ -2396,16 +2404,19 @@ void drawGameTextScreen() {
     drawUtf8Text(
       oled,
       0,
-      24,
+      18,
       "포획 성공!"
     );
 
     drawUtf8Text(
       oled,
       0,
-      48,
-      "OK 확인"
+      36,
+      "파티에 합류!"
     );
+
+    oled.setCursor(0, 56);
+    oled.print("OK");
 
     oled.display();
 
@@ -3224,6 +3235,10 @@ void handleButton(
             ) {
               resetBattleCommandUi();
               resetBattleBallUi();
+            } else if (gameSave.state.party.count >= PARTY_CAPACITY ||
+                       gameSave.state.progress.nextInstanceId == UINT32_MAX) {
+              // 포획 시도/저장/연출 없이 안내만 표시한다.
+              battleUiMode = BattleUiMode::CaptureUnavailable;
             } else {
               auto next =
                 gameSave.state;
@@ -3277,6 +3292,10 @@ void handleButton(
 
           break;
         }
+
+        case BattleUiMode::CaptureUnavailable:
+          if (button == BUTTON_OK) battleUiMode = BattleUiMode::BallSelection;
+          break;
 
         case BattleUiMode::PartyUnavailable:
           if (
