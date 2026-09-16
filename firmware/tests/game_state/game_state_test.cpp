@@ -537,7 +537,9 @@ void v2MigrationTests() {
 }
 
 void battleTests();
+void saveWireTests();
 int main() {
+  saveWireTests();
   battleTests();
   codecTests();
   storageTests();

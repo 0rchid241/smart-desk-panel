@@ -1,10 +1,10 @@
 #pragma once
 #include "game_state.h"
+#include "pokemon_record_codec.h"
 
 namespace PokemonGame {
 constexpr uint16_t SAVE_VERSION = 4;
 constexpr size_t SAVE_HEADER_SIZE = 18;
-constexpr size_t POKEMON_RECORD_SIZE = 24;
 constexpr size_t SAVE_V1_MAX_SIZE =
   SAVE_HEADER_SIZE + 14 + 1 +
   PARTY_CAPACITY * POKEMON_RECORD_SIZE +

@@ -470,3 +470,81 @@ ESP32 core 3.3.11 / ESP32 Dev Module / Huge APP 최종 전체 컴파일·링크 
 앞서 기록한 Arduino CLI 명령과 `build/firmware-g4`, `build/firmware-g4-fallback` 경로를 재사용했습니다.
 양쪽 컴파일 snapshot과 최종 게임 소스의 일치 및 fallback 애셋 의존성 부재를 확인했습니다.
 `git diff --check` PASS. 업로드/commit/push는 수행하지 않았습니다.
+
+## G5-C2-B1 — 독립 Box snapshot 저장 계층
+
+B1은 UI/포획/GameState와 연결하지 않습니다. SAVE_VERSION=4, SAVE_MAX_SIZE=554,
+`pokemon_g1/save_a/save_b`, 기존 migration과 NVS load/save는 그대로입니다.
+GameApp은 mount/create를 호출하지 않으며 업로드 시 자동 포맷하지 않습니다.
+
+### 파일 계약
+
+- `box_data.*`: 플랫폼 독립 header/bitmap/mutation 타입.
+- `box_storage.*`: 번들 Arduino LittleFS adapter. mount는 `begin(false)`.
+- `pokemon_record_codec.*`: GameSave와 Box가 공유하는 기존 24-byte 표현.
+- `crc32.h`: IEEE CRC32 incremental helper. GameSave CRC 범위/결과 유지.
+- Box capacity=2048, formatVersion=1. Party 3슬롯과 별도.
+- 경로 `/pokemon/box_<16 hex storeId>_<16 hex generation>.bin` (50문자).
+  storeId/generation은 0이 아닌 uint64. 새로운 generation은 source보다 커야 합니다.
+- 고정 길이 **49,472 bytes (48.3125 KiB)** = header 64 + bitmap 256 + records 49,152.
+- Header는 explicit little-endian이며 struct memory를 쓰지 않습니다.
+
+| offset | bytes | field |
+| --- | ---: | --- |
+| 0 | 4 | PKBX |
+| 4 | 2 | formatVersion=1 |
+| 6 | 2 | headerSize=64 |
+| 8 | 2 | recordSize=24 |
+| 10 | 2 | flags=0 |
+| 12 | 4 | capacity=2048 |
+| 16 | 4 | occupiedCount |
+| 20 | 4 | bitmapBytes=256 |
+| 24 | 8 | storeId |
+| 32 | 8 | generation |
+| 40 | 4 | payloadBytes=49408 |
+| 44 | 4 | CRC32 |
+| 48 | 16 | reserved=0 |
+
+CRC는 bytes 44..47만 제외한 전체 파일을 보호합니다. slot offset은
+`320 + slot * 24`. 빈 레코드는 모두 0이며 bitmap bit는 slot%8에 대응합니다.
+`Snapshot::open`은 전체 길이/header/key/bitmap/count/CRC/개체 의미/중복 ID를
+검증한 뒤에만 metadata와 레코드를 노출합니다. 현재 isValidPokemon의 fixture 종/폼/
+기술 제한도 그대로 적용됩니다. Party 중복 및 도감 정합성은 아직 검사하지 않습니다.
+
+### API와 수명
+
+`mount/unmount`, `exists`, `createEmpty`, `validate`, `mutate`, `removeSnapshot`과
+`Snapshot::open/close/metadata/occupied/readSlot/findEmpty/findInstance/findSpecies`를 제공합니다.
+`findSpecies(species, startSlot, outputSlot)`을 startSlot=이전 결과+1로 반복하면 중복 종을
+순차 조회할 수 있습니다. metadata는 성공한 open 이후에만 사용합니다.
+조회 실패 시 출력 개체/metadata는 부분 적용하지 않습니다.
+
+모든 호출은 직렬로 사용합니다. reader가 열린 동안 해당 파일 삭제/외부 수정이나 unmount를
+하지 않습니다. 삭제 API는 명시적 요청만 수행하며 root 보호는 향후 상위 coordinator 책임입니다.
+최신 generation 자동 선택, 자동 cleanup, 자동 format은 없습니다.
+
+mutation은 Insert/Remove/Replace 한 슬롯만 바꿔 새 파일로 씁니다. source 전체 검증 후
+쓰기 → flush/close → reopen → 전체 검증 및 예상 CRC/count 비교를 수행합니다.
+기존 파일명 충돌은 거부하며 source는 읽기 전용입니다. 실패한 destination은 남을 수 있고,
+재시도도 collision으로 거부합니다. 호출자가 validate/removeSnapshot으로 명시적으로 처리합니다.
+Arduino flush/close는 오류 반환값이 없으므로 B1은 재오픈 검증까지만 보장합니다.
+전원 차단 transaction/불확정 commit 해결은 향후 v5 root 연결 단계의 책임입니다.
+
+### RAM과 검증
+
+상주 Box 배열이나 검색 index는 없습니다. 열린 Snapshot마다 bitmap 256 bytes + metadata +
+File handle을 가집니다. 작성 중에는 bitmap 256/header 64/record 24 bytes와 개체 한 개를 사용합니다.
+중복 ID 검사는 임시 ID 64개(256 bytes)를 이용해 최대 32그룹의 순차 비교를 수행합니다.
+고정 scratch만 사용하지만 채워진 Box 검증에는 추가 I/O가 필요합니다. 실기 최악 지연은 후속 측정 대상입니다.
+LittleFS 내부 cache/heap과 함수 stack overhead는 별도입니다.
+
+`firmware/tests/game_state/run.ps1`은 실제 box_storage.cpp를 메모리 LittleFS fake로 빌드하며
+MSVC /W4 /WX를 유지합니다. empty/full 2048슬롯, insert/remove/replace, 원본 보존,
+검색/경계/64-bit key, 중복 ID(그룹 내부/경계), header/bitmap/count/CRC/개체 손상,
+truncation/trailing bytes, 부분 쓰기/flush 손상/close 절단/reopen 실패를 검증합니다.
+`save_v4_golden.h`는 기준 2d699e2의 수정 전 save_data.cpp로 생성한 554-byte fixture이며,
+공통 codec 적용 후 header/payload/CRC 전체가 동일한지 매번 검사합니다.
+
+다음 단계는 v5 BoxRoot, 기존 저장의 migration/초기 filesystem 정책, main+Box 복구/commit
+coordinator입니다. B1의 key/metadata/mutation API를 연결하되 NVS A/B 양쪽 root 보호와
+Party+Box ID 정합성을 그 단계에서 추가해야 합니다.
