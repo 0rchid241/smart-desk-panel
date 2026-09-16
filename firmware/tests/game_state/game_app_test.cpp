@@ -40,6 +40,16 @@ bool graphicsVisible(
 
 } // namespace
 
+void finishFeedback() {
+  const auto writes = FakeNvs::writes;
+  int count = 0;
+  while (visible("데미지!") || visible("변화 기술") || visible("빗나갔다!")) {
+    assert(++count <= 2);
+    GameApp::handleButton(BUTTON_OK);
+  }
+  assert(FakeNvs::writes == writes);
+}
+
 
 namespace Displays {
 
@@ -123,6 +133,7 @@ void drawUtf8Text(
 
   oled.text +=
     text;
+  oled.textRuns.push_back({x, y, text});
 }
 
 
@@ -147,6 +158,20 @@ void drawScrollingUtf8Text(
   );
 }
 
+
+void assertMoveViewport(const char* first, const char* second, int cursorRow) {
+  bool firstFound = false, secondFound = second == nullptr;
+  unsigned cursors = 0;
+  for (const auto& run : gameOled.textRuns) {
+    if (run.x == 12 && run.y == 18 && run.value == first) firstFound = true;
+    if (second && run.x == 12 && run.y == 36 && run.value == second) secondFound = true;
+    if (run.value == ">") {
+      ++cursors;
+      assert(run.x == 0 && run.y == 22 + cursorRow * 18);
+    }
+  }
+  assert(firstFound && secondFound && cursors == 1);
+}
 
 int main() {
   using namespace PokemonGame;
@@ -696,13 +721,18 @@ int main() {
   assert(GameApp::state().battle.status == BattleStatus::Active);
   assert(GameApp::state().battle.wild.speciesId == firstWildSpecies);
   assert(GameApp::state().battle.wild.gender == firstWildGender);
-  assert(visible("전기쇼크") && visible("PP 30/30") && visible("YOU HP 18/18"));
+  assert(visible("기술 선택") && visible("전기쇼크") && visible("울음소리") && visible("PP 30/30"));
+  assert(!visible("HP") && !visible("Lv.") && !visible("피카츄"));
+  assertMoveViewport("전기쇼크", "울음소리", 0);
   GameApp::drawGameGraphics();
-  assert(graphicsVisible("YOU") && graphicsVisible("WILD") && graphicsVisible(firstWild->name));
+  assert(!graphicsVisible("YOU") && !graphicsVisible("WILD") && graphicsVisible(firstWild->name));
+  assert(graphicsVisible("피카츄") && graphicsVisible("Lv.5") && graphicsVisible("HP 18/18"));
   GameApp::handleButton(BUTTON_RIGHT);
   assert(visible("울음소리") && visible("PP 40/40"));
+  assertMoveViewport("전기쇼크", "울음소리", 1);
   GameApp::handleButton(BUTTON_LEFT);
   assert(visible("전기쇼크"));
+  assertMoveViewport("전기쇼크", "울음소리", 0);
 
   auto stateBytes = [](const GameState& state) {
     GameSave save; save.state = state;
@@ -717,6 +747,7 @@ int main() {
   FakeNvs::partialWrite = true;
   GameApp::handleButton(BUTTON_OK);
   assert(stateBytes(GameApp::state()) == beforeTurn && visible("SAVE ERROR"));
+  assert(!visible("변화 기술") && !visible("데미지!"));
   const auto failedTurnWrites = FakeNvs::writes;
   for (int i = 0; i < 100; ++i) GameApp::update();
   assert(FakeNvs::writes == failedTurnWrites);
@@ -726,12 +757,13 @@ int main() {
   GameApp::handleButton(BUTTON_RIGHT);
   GameApp::handleButton(BUTTON_OK);
   assert(stateBytes(GameApp::state()) == stateBytes(expectedTurn));
-  assert(GameApp::state().battle.turn == 1 && visible("PP 39/40"));
+  assert(GameApp::state().battle.turn == 1 && visible("피카츄의") && visible("울음소리!") && visible("변화 기술"));
   const auto afterTurn = stateBytes(GameApp::state());
   char hpText[32];
-  snprintf(hpText, sizeof(hpText), "YOU HP %u/18",
+  snprintf(hpText, sizeof(hpText), "HP %u/18",
     static_cast<unsigned>(GameApp::state().battle.player.currentHp));
-  assert(GameApp::state().battle.player.currentHp < 18 && visible(hpText));
+  GameApp::drawGameGraphics();
+  assert(GameApp::state().battle.player.currentHp < 18 && graphicsVisible(hpText));
   GameApp::init(); GameApp::drawGameTextScreen();
   assert(stateBytes(GameApp::state()) == afterTurn && visible("PP 30/30"));
   assert(GameApp::state().battle.player.pp[1] == 39);
@@ -747,6 +779,7 @@ int main() {
   victory.battle.opponent.currentHp = 1;
   assert(GameApp::saveState(victory));
   GameApp::handleButton(BUTTON_OK);
+  finishFeedback();
   assert(GameApp::state().battle.status == BattleStatus::Won && visible("전투 승리!"));
   GameApp::init(); GameApp::drawGameTextScreen();
   assert(visible("전투 승리!"));
@@ -762,6 +795,7 @@ int main() {
   assert(startBattle(defeat)); defeat.battle.player.currentHp = 1;
   assert(GameApp::saveState(defeat));
   GameApp::init(); GameApp::handleButton(BUTTON_OK);
+  finishFeedback();
   assert(GameApp::state().battle.status == BattleStatus::Lost && visible("쓰러졌다..."));
   GameApp::init(); GameApp::drawGameTextScreen();
   assert(visible("쓰러졌다..."));
@@ -778,14 +812,62 @@ int main() {
   for (auto& pp : exhausted.battle.opponent.pp) pp = 0;
   assert(GameApp::saveState(exhausted)); GameApp::init(); GameApp::drawGameTextScreen();
   assert(visible("발버둥") && visible("PP --"));
+  assertMoveViewport("발버둥", nullptr, 0);
   GameApp::handleButton(BUTTON_LEFT); GameApp::handleButton(BUTTON_RIGHT);
   assert(visible("발버둥"));
   for (int i = 0; i < 30 && GameApp::state().battle.status == BattleStatus::Active; ++i)
     GameApp::handleButton(BUTTON_OK);
   assert(GameApp::state().battle.status != BattleStatus::Active);
+  finishFeedback();
   GameApp::handleButton(BUTTON_OK);
   assert(GameApp::state().battle.status == BattleStatus::None && partner(GameApp::state())->currentHp == 18);
   std::puts("PASS app battle: start/turn/result atomicity, HP/PP UI, navigation, reboot, DESK resume, Won/Lost");
+
+  auto fourMoves = createNewGame();
+  auto& four = fourMoves.party.members[0];
+  four.moves[0] = 21; four.moves[1] = 33; four.moves[2] = 45; four.moves[3] = 84;
+  assert(setEncounter(fourMoves.encounter,19,0,2,Gender::Male,false));
+  assert(startBattle(fourMoves)); fourMoves.battle.rngState = 1;
+  assert(GameApp::saveState(fourMoves)); GameApp::init(); GameApp::drawGameTextScreen();
+  assert(visible("힘껏치기") && visible("몸통박치기") && visible("PP 20/20"));
+  assertMoveViewport("힘껏치기", "몸통박치기", 0);
+  GameApp::handleButton(BUTTON_LEFT); assert(visible("PP 30/30"));
+  assertMoveViewport("울음소리", "전기쇼크", 1);
+  GameApp::handleButton(BUTTON_RIGHT); assert(visible("PP 20/20"));
+  assertMoveViewport("힘껏치기", "몸통박치기", 0);
+  GameApp::handleButton(BUTTON_RIGHT); assert(visible("PP 35/35"));
+  assertMoveViewport("힘껏치기", "몸통박치기", 1);
+  GameApp::handleButton(BUTTON_RIGHT); assert(visible("PP 40/40"));
+  assertMoveViewport("몸통박치기", "울음소리", 1);
+  GameApp::handleButton(BUTTON_RIGHT); assert(visible("PP 30/30"));
+  assertMoveViewport("울음소리", "전기쇼크", 1);
+  GameApp::handleButton(BUTTON_LEFT); assertMoveViewport("울음소리", "전기쇼크", 0);
+  GameApp::handleButton(BUTTON_LEFT); assertMoveViewport("몸통박치기", "울음소리", 0);
+  GameApp::handleButton(BUTTON_RIGHT);
+  GameApp::handleButton(BUTTON_RIGHT);
+  GameApp::handleButton(BUTTON_RIGHT); assert(visible("PP 20/20"));
+  GameApp::handleButton(BUTTON_OK);
+  assert(visible("힘껏치기!") && visible("빗나갔다!"));
+  const auto messageWrites = FakeNvs::writes;
+  GameApp::handleButton(BUTTON_LEFT); assert(visible("빗나갔다!"));
+  GameApp::handleButton(BUTTON_OK);
+  assert(visible("꼬렛의") && visible("몸통박치기!") && visible("데미지!"));
+  GameApp::handleButton(BUTTON_OK);
+  assert(visible("기술 선택") && FakeNvs::writes == messageWrites);
+  auto skip = GameApp::state(); skip.battle.player.pp[0] = 0; skip.battle.player.pp[2] = 0;
+  assert(GameApp::saveState(skip)); GameApp::init(); GameApp::drawGameTextScreen();
+  assert(visible("PP 35/35"));
+  assertMoveViewport("힘껏치기", "몸통박치기", 1);
+  GameApp::handleButton(BUTTON_RIGHT); assert(visible("PP 30/30"));
+  assertMoveViewport("울음소리", "전기쇼크", 1);
+  GameApp::handleButton(BUTTON_RIGHT); assert(visible("PP 35/35"));
+  assertMoveViewport("몸통박치기", "울음소리", 0);
+  for (int i = 0; i < 30 && GameApp::state().battle.status == BattleStatus::Active; ++i) {
+    GameApp::handleButton(BUTTON_OK); finishFeedback();
+  }
+  assert(GameApp::state().battle.status != BattleStatus::Active);
+  GameApp::handleButton(BUTTON_OK);
+  assert(GameApp::state().battle.status == BattleStatus::None);
 
   assert(
     visible(

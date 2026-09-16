@@ -20,6 +20,20 @@ struct BattleState {
   uint32_t rngState = 0;
 };
 constexpr uint8_t STRUGGLE_SLOT = 4;
+// 화면용 일시 보고서. BattleState/세이브에는 포함하지 않는다.
+enum class BattleActor : uint8_t { Player, Wild };
+struct BattleActionReport {
+  BattleActor actor = BattleActor::Player;
+  MoveId moveId = 0; // 0은 발버둥.
+  bool hit = false;
+  uint16_t damage = 0; // overkill을 제외한 실제 HP 감소량.
+  uint8_t effectiveness = 4; // 4 = 1배.
+  bool fainted = false;
+};
+struct BattleTurnReport {
+  BattleActionReport actions[2] = {};
+  uint8_t count = 0;
+};
 PokemonInstance wildPokemon(const BattleState& battle);
 bool isValidBattle(const BattleState& battle, const PokemonInstance* player);
 uint32_t battleRandom(uint32_t& state);
@@ -31,6 +45,7 @@ bool canSelectMove(const PokemonInstance& player, const BattleState& battle, uin
 uint8_t nextBattleMove(const PokemonInstance& player, const BattleState& battle,
                        uint8_t current, int direction);
 bool startBattle(GameState& state);
-bool resolveBattleTurn(GameState& state, uint8_t playerSlot);
+// 실패 시 state와 report 모두 유지한다. 저장 성공 여부는 호출자가 결정한다.
+bool resolveBattleTurn(GameState& state, uint8_t playerSlot, BattleTurnReport* report = nullptr);
 bool acknowledgeBattle(GameState& state);
 }

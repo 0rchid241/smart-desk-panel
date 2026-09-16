@@ -90,7 +90,14 @@ void turns() {
   assert(nextBattleMove(*partner(state),state.battle,0,1) == 1);
   assert(nextBattleMove(*partner(state),state.battle,0,-1) == 1);
   auto repeat = state;
-  assert(resolveBattleTurn(state,0) && resolveBattleTurn(repeat,0));
+  BattleTurnReport report;
+  assert(resolveBattleTurn(state,0,&report) && resolveBattleTurn(repeat,0));
+  assert(report.count == 2 && report.actions[0].actor == BattleActor::Player);
+  assert(report.actions[1].actor == BattleActor::Wild && report.actions[0].moveId == 84);
+  assert(report.actions[1].moveId == 33 && report.actions[0].hit && report.actions[1].hit);
+  assert(report.actions[0].damage == 13 - state.battle.opponent.currentHp);
+  assert(report.actions[1].damage == 18 - state.battle.player.currentHp);
+  static_assert(SAVE_VERSION == 4 && BATTLE_RECORD_SIZE == 40 && SAVE_MAX_SIZE == 554, "G4 wire format");
   assert(snapshot(state) == snapshot(repeat));
   assert(state.battle.player.pp[0] == 29 && state.battle.opponent.pp[0] == 34);
   assert(state.battle.player.currentHp < 18 && state.battle.opponent.currentHp < 13);
@@ -101,7 +108,9 @@ void turns() {
   assert(setEncounter(miss.encounter,19,0,2,Gender::Male,false));
   assert(startBattle(miss)); miss.battle.rngState = 1;
   const auto hpBefore = miss.battle.opponent.currentHp;
-  assert(resolveBattleTurn(miss,0));
+  assert(resolveBattleTurn(miss,0,&report));
+  assert(report.count == 2 && !report.actions[0].hit && report.actions[0].damage == 0);
+  assert(!report.actions[0].fainted && report.actions[0].moveId == 21);
   assert(miss.battle.opponent.currentHp == hpBefore && miss.battle.player.pp[0] == 19);
   auto hit = createNewGame(); hit.party.members[0].moves[0] = 21;
   assert(setEncounter(hit.encounter,19,0,2,Gender::Male,false));
@@ -110,11 +119,13 @@ void turns() {
   auto maxTurn = active(); maxTurn.battle.turn = UINT32_MAX;
   assert(resolveBattleTurn(maxTurn,0) && maxTurn.battle.turn == UINT32_MAX);
   auto status = active();
-  assert(resolveBattleTurn(status,1));
+  assert(resolveBattleTurn(status,1,&report));
+  assert(report.actions[0].hit && report.actions[0].moveId == 45 && report.actions[0].damage == 0);
   assert(status.battle.player.pp[1] == 39 && status.battle.opponent.currentHp == 13);
   status.battle.player.pp[0] = 0;
   auto before = snapshot(status);
-  assert(!resolveBattleTurn(status,0) && snapshot(status) == before);
+  const auto oldCount = report.count;
+  assert(!resolveBattleTurn(status,0,&report) && snapshot(status) == before && report.count == oldCount);
   for (auto& pp : status.battle.player.pp) pp = 0;
   for (auto& pp : status.battle.opponent.pp) pp = 0;
   assert(canSelectMove(*partner(status),status.battle,STRUGGLE_SLOT));
@@ -123,12 +134,14 @@ void turns() {
   assert(status.battle.opponent.currentHp < 13);
   // 빠른 플레이어가 기절시키면 야생 PP는 소모되지 않는다.
   auto won = active(); won.battle.opponent.currentHp = 1;
-  assert(resolveBattleTurn(won,0));
+  assert(resolveBattleTurn(won,0,&report));
+  assert(report.count == 1 && report.actions[0].damage == 1 && report.actions[0].fainted);
   assert(won.battle.status == BattleStatus::Won && won.battle.opponent.pp[0] == 35);
   assert(won.battle.player.currentHp == 18);
   roundtrip(won);
   auto lost = active(25,100); lost.battle.player.currentHp = 1;
-  assert(resolveBattleTurn(lost,0));
+  assert(resolveBattleTurn(lost,0,&report));
+  assert(report.count == 1 && report.actions[0].actor == BattleActor::Wild && report.actions[0].fainted);
   assert(lost.battle.status == BattleStatus::Lost && lost.battle.player.pp[0] == 30);
   roundtrip(lost);
   // 같은 속도: 같은 seed는 같은 순서. seed를 달리하면 양쪽 순서 모두 나온다.

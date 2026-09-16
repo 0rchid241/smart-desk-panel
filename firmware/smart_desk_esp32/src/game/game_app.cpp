@@ -92,6 +92,12 @@ GameScreen screen =
   GameScreen::Home;
 
 uint8_t battleMoveSlot = 0;
+uint8_t battleMoveViewportTop = 0;
+PokemonGame::BattleTurnReport battleReport;
+uint8_t battleActionIndex = 0;
+bool hitEffect = false;
+unsigned long hitEffectStarted = 0;
+unsigned long hitEffectFrame = 0;
 
 
 bool saveError =
@@ -724,41 +730,82 @@ void selectUsableBattleMove() {
     battleMoveSlot = PokemonGame::nextBattleMove(*p, gameSave.state.battle, battleMoveSlot, 1);
 }
 
+bool showingBattleAction() { return battleActionIndex < battleReport.count; }
+
+void beginActionFeedback() {
+  hitEffect = showingBattleAction() && battleReport.actions[battleActionIndex].hit &&
+    battleReport.actions[battleActionIndex].damage > 0;
+  hitEffectStarted = millis();
+  hitEffectFrame = 0;
+  graphicsDirty = true;
+}
+
+// 기술 하위 메뉴의 표시만 담당한다. 저장/행동 메시지와 독립적인 2줄 viewport.
+void drawBattleMoveSelection(Adafruit_SSD1306& oled) {
+  using namespace PokemonGame;
+  const auto* p = partner(gameSave.state);
+  if (!p) return;
+  const auto& b = gameSave.state.battle;
+  selectUsableBattleMove();
+  uint8_t slots[4] = {}, count = 0, selectedRow = 0;
+  if (battleMoveSlot == STRUGGLE_SLOT) slots[count++] = STRUGGLE_SLOT;
+  else for (uint8_t slot = 0; slot < 4; ++slot) {
+    // PP 소진으로 목록 순서가 바뀌지 않게 기술은 남기고, 입력에서만 건너뛴다.
+    if (!findMove(p->moves[slot])) continue;
+    if (slot == battleMoveSlot) selectedRow = count;
+    slots[count++] = slot;
+  }
+  const uint8_t lastTop = count > 2 ? static_cast<uint8_t>(count - 2) : 0;
+  if (battleMoveViewportTop > lastTop) battleMoveViewportTop = lastTop;
+  if (selectedRow < battleMoveViewportTop) battleMoveViewportTop = selectedRow;
+  else if (selectedRow >= battleMoveViewportTop + 2) battleMoveViewportTop = selectedRow - 1;
+  drawUtf8Text(oled, 0, 0, "기술 선택");
+  for (uint8_t row = 0; row < 2 && battleMoveViewportTop + row < count; ++row) {
+    const uint8_t slot = slots[battleMoveViewportTop + row];
+    const auto& move = slot == STRUGGLE_SLOT ? struggleMove() : *findMove(p->moves[slot]);
+    const int16_t y = static_cast<int16_t>(18 + row * 18);
+    if (slot == battleMoveSlot) { oled.setCursor(0, y + 4); oled.print(">"); }
+    drawUtf8Text(oled, 12, y, move.name);
+  }
+  oled.setCursor(0, 56);
+  if (saveError) oled.print("SAVE ERROR / OK");
+  else if (battleMoveSlot == STRUGGLE_SLOT) oled.print("PP --  L/R OK");
+  else {
+    char text[32];
+    snprintf(text, sizeof(text), "PP %u/%u  L/R OK", static_cast<unsigned>(b.player.pp[battleMoveSlot]),
+      static_cast<unsigned>(findMove(p->moves[battleMoveSlot])->maxPP));
+    oled.print(text);
+  }
+}
+
 void drawBattleText(Adafruit_SSD1306& oled) {
   using namespace PokemonGame;
   const auto& b = gameSave.state.battle;
+  if (showingBattleAction()) {
+    const auto& action = battleReport.actions[battleActionIndex];
+    const auto* player = partner(gameSave.state);
+    const auto* actor = action.actor == BattleActor::Player
+      ? findSpecies(player->speciesId, player->formId) : findSpecies(b.wild.speciesId, b.wild.formId);
+    const auto& move = action.moveId ? *findMove(action.moveId) : struggleMove();
+    char text[48];
+    snprintf(text, sizeof(text), "%s의", actor->name);
+    drawUtf8Text(oled, 0, 0, text);
+    snprintf(text, sizeof(text), "%s!", move.name);
+    drawUtf8Text(oled, 0, 18, text);
+    if (!action.hit) snprintf(text, sizeof(text), "빗나갔다!");
+    else if (move.category == MoveCategory::Status) snprintf(text, sizeof(text), "변화 기술");
+    else snprintf(text, sizeof(text), "%u 데미지!", static_cast<unsigned>(action.damage));
+    drawUtf8Text(oled, 0, 36, text);
+    oled.setCursor(0, 56); oled.print("OK");
+    return;
+  }
   if (b.status == BattleStatus::Won || b.status == BattleStatus::Lost) {
     drawUtf8Text(oled, 0, 0, b.status == BattleStatus::Won ? "전투 승리!" : "쓰러졌다...");
     if (saveError) drawUtf8Text(oled, 0, 24, "저장 오류");
     drawUtf8Text(oled, 0, 48, saveError ? "OK 재시도" : "OK 확인");
     return;
   }
-  const auto* p = partner(gameSave.state);
-  const auto* species = findSpecies(b.wild.speciesId, b.wild.formId);
-  if (!p || !species) return;
-  selectUsableBattleMove();
-  const auto& move = battleMoveSlot == STRUGGLE_SLOT ? struggleMove() : *findMove(p->moves[battleMoveSlot]);
-  // 한글 두 행(16px), 숫자 세 행(8px): HP는 3자리까지 들어간다.
-  drawUtf8Text(oled, 0, 0, species->name);
-  char text[32];
-  snprintf(text, sizeof(text), "Lv.%u", static_cast<unsigned>(b.wild.level));
-  oled.setCursor(74, 4); oled.print(text);
-  snprintf(text, sizeof(text), "HP %u/%u", static_cast<unsigned>(b.opponent.currentHp),
-    static_cast<unsigned>(calculateStats(wildPokemon(b)).hp));
-  oled.setCursor(0, 16); oled.print(text);
-  snprintf(text, sizeof(text), "YOU HP %u/%u", static_cast<unsigned>(b.player.currentHp),
-    static_cast<unsigned>(calculateStats(*p).hp));
-  oled.setCursor(0, 24); oled.print(text);
-  oled.setCursor(0, 38); oled.print(">");
-  drawUtf8Text(oled, 12, 34, move.name);
-  if (saveError) {
-    oled.setCursor(0, 56); oled.print("SAVE ERROR / OK");
-  } else {
-    if (battleMoveSlot == STRUGGLE_SLOT) snprintf(text, sizeof(text), "PP --  L/R OK");
-    else snprintf(text, sizeof(text), "PP %u/%u  L/R OK", static_cast<unsigned>(b.player.pp[battleMoveSlot]),
-      static_cast<unsigned>(move.maxPP));
-    oled.setCursor(0, 56); oled.print(text);
-  }
+  drawBattleMoveSelection(oled);
 }
 
 void drawBattleGraphic(Adafruit_SSD1306& oled) {
@@ -768,33 +815,48 @@ void drawBattleGraphic(Adafruit_SSD1306& oled) {
   const auto* p = partner(gameSave.state);
   const auto* wild = findSpecies(b.wild.speciesId, b.wild.formId);
   if (p && wild) {
-    oled.setCursor(42, 18); oled.print("WILD");
-    drawUtf8Text(oled, 42, 0, wild->name);
-    oled.setCursor(34, 56); oled.print("YOU");
-    drawUtf8Text(oled, 34, 38, findSpecies(p->speciesId, p->formId)->name);
-    oled.setCursor(54, 28); oled.print("VS");
+    char text[24];
+    drawUtf8Text(oled, 0, 0, wild->name);
+    snprintf(text, sizeof(text), "Lv.%u", static_cast<unsigned>(b.wild.level));
+    oled.setCursor(54, 4); oled.print(text);
+    snprintf(text, sizeof(text), "HP %u/%u", static_cast<unsigned>(b.opponent.currentHp),
+      static_cast<unsigned>(calculateStats(wildPokemon(b)).hp));
+    oled.setCursor(0, 20); oled.print(text);
+    drawUtf8Text(oled, 32, 34, findSpecies(p->speciesId, p->formId)->name);
+    snprintf(text, sizeof(text), "Lv.%u", static_cast<unsigned>(p->level));
+    oled.setCursor(84, 38); oled.print(text);
+    snprintf(text, sizeof(text), "HP %u/%u", static_cast<unsigned>(b.player.currentHp),
+      static_cast<unsigned>(calculateStats(*p).hp));
+    oled.setCursor(32, 54); oled.print(text);
+    const unsigned long elapsed = millis() - hitEffectStarted;
+    const bool blink = hitEffect && showingBattleAction() && elapsed < 300 && (elapsed / 75) % 2 == 0;
+    const bool hideWild = blink && battleReport.actions[battleActionIndex].actor == BattleActor::Player;
+    const bool hidePlayer = blink && battleReport.actions[battleActionIndex].actor == BattleActor::Wild;
 #if HAS_LOCAL_WILD_ASSET
     // 기존 48x48 bitmap을 화면에서만 절반 크기로 그린다. 새 애셋/버퍼 없음.
     auto miniature = [&oled](SpeciesId id, int x, int y) {
       const uint8_t* sprite = localWildSprite(id);
       if (!sprite) return;
+      // 현재 fixture 임시 보정: 꼬렛의 얇은 부분만 2픽셀 임계값으로 보존한다.
+      const unsigned threshold = id == 19 ? 2u : 3u;
       const int stride = (WILD_SPRITE_WIDTH + 7) / 8;
       for (int sy = 0; sy < WILD_SPRITE_HEIGHT; sy += 2)
         for (int sx = 0; sx < WILD_SPRITE_WIDTH; sx += 2) {
-          bool ink = false;
+          unsigned ink = 0;
           for (int dy = 0; dy < 2 && sy + dy < WILD_SPRITE_HEIGHT; ++dy)
             for (int dx = 0; dx < 2 && sx + dx < WILD_SPRITE_WIDTH; ++dx)
-              ink |= (pgm_read_byte(sprite + (sy + dy) * stride + (sx + dx) / 8) &
-                      (0x80u >> ((sx + dx) % 8))) != 0;
-          if (ink) oled.drawPixel(x + sx / 2, y + sy / 2, SSD1306_WHITE);
+              ink += (pgm_read_byte(sprite + (sy + dy) * stride + (sx + dx) / 8) &
+                      (0x80u >> ((sx + dx) % 8))) != 0 ? 1u : 0u;
+          // OR 축소의 고립 픽셀/굵어진 경계를 억제한다.
+          if (ink >= threshold) oled.drawPixel(x + sx / 2, y + sy / 2, SSD1306_WHITE);
         }
     };
-    miniature(b.wild.speciesId, 102, 0);
-    miniature(p->speciesId, 2, 36);
+    if (!hideWild) miniature(b.wild.speciesId, 102, 0);
+    if (!hidePlayer) miniature(p->speciesId, 2, 36);
 #else
     // 그림이 없어도 양쪽 위치와 종을 구분할 수 있다.
-    oled.setCursor(110, 8); oled.print("?");
-    oled.setCursor(10, 44); oled.print("?");
+    if (!hideWild) { oled.setCursor(110, 8); oled.print("?"); }
+    if (!hidePlayer) { oled.setCursor(10, 44); oled.print("?"); }
 #endif
     oled.drawLine(98, 26, 127, 26, SSD1306_WHITE);
     oled.drawLine(0, 62, 29, 62, SSD1306_WHITE);
@@ -806,7 +868,11 @@ void drawBattleGraphic(Adafruit_SSD1306& oled) {
 
 
 void init() {
+  battleReport = PokemonGame::BattleTurnReport{};
+  battleActionIndex = 0;
+  hitEffect = false;
   battleMoveSlot = 0;
+  battleMoveViewportTop = 0;
   gameMenuIndex =
     0;
 
@@ -1467,6 +1533,14 @@ void drawGameTextScreen() {
 void updatePokemonAnimation(
   DeviceMode deviceMode
 ) {
+  if (deviceMode == MODE_GAME && hitEffect) {
+    const unsigned long elapsed = millis() - hitEffectStarted;
+    if (elapsed >= 300) { hitEffect = false; graphicsDirty = true; }
+    else if (elapsed / 75 != hitEffectFrame) {
+      hitEffectFrame = elapsed / 75;
+      graphicsDirty = true;
+    }
+  }
 
   // 화면 상태가 바뀌었을 때 GAME 모드에서 한 번만 그래픽 OLED를 갱신한다.
   if (
@@ -1539,13 +1613,27 @@ void handleButton(
     using namespace PokemonGame;
     const auto* p = partner(gameSave.state);
     if (!p) return;
+    if (showingBattleAction()) {
+      if (button == BUTTON_OK) {
+        ++battleActionIndex;
+        beginActionFeedback();
+      }
+      drawGameTextScreen();
+      return;
+    }
     if (gameSave.state.battle.status == BattleStatus::Active) {
       if (button == BUTTON_LEFT || button == BUTTON_RIGHT)
         battleMoveSlot = nextBattleMove(*p, gameSave.state.battle, battleMoveSlot,
           button == BUTTON_LEFT ? -1 : 1);
       else if (button == BUTTON_OK) {
         auto next = gameSave.state;
-        if (resolveBattleTurn(next, battleMoveSlot) && saveState(next)) selectUsableBattleMove();
+        BattleTurnReport report;
+        if (resolveBattleTurn(next, battleMoveSlot, &report) && saveState(next)) {
+          battleReport = report;
+          battleActionIndex = 0;
+          selectUsableBattleMove();
+          beginActionFeedback();
+        }
       }
     } else if (button == BUTTON_OK) {
       auto next = gameSave.state;
@@ -1724,6 +1812,7 @@ void handleButton(
       if (PokemonGame::startBattle(next) && saveState(next)) {
         screen = GameScreen::Battle;
         battleMoveSlot = 0;
+        battleMoveViewportTop = 0;
         selectUsableBattleMove();
         graphicsDirty = true;
       }

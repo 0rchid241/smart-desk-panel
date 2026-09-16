@@ -65,9 +65,10 @@ const uint8_t* const pikachu_idle_frames[6] = {hostIdle,hostIdle,hostIdle,hostId
 #include <cstdint>
 constexpr int WILD_SPRITE_WIDTH = 48;
 constexpr int WILD_SPRITE_HEIGHT = 48;
-const uint8_t pidgey_wild_1bit[288] = {0x80};
-const uint8_t rattata_wild_1bit[288] = {0x80};
-const uint8_t pikachu_wild_1bit[288] = {0x80};
+// 4 blocks: 3/1/2/4 white pixels. Strict majority emits exactly 2 pixels.
+const uint8_t pidgey_wild_1bit[288] = {0xeb,0,0,0,0,0,0x87};
+const uint8_t rattata_wild_1bit[288] = {0xeb,0,0,0,0,0,0x87};
+const uint8_t pikachu_wild_1bit[288] = {0xeb,0,0,0,0,0,0x87};
 '@ | Set-Content -LiteralPath (Join-Path $assetDir 'wild_encounter_1bit.h') -Encoding utf8
 $assetArgs = @($appArgs | ForEach-Object {
   $_.Replace($hostSketch, $assetSketch).Replace('game_app_test', 'game_app_asset_test')

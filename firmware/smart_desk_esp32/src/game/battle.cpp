@@ -113,11 +113,12 @@ bool startBattle(GameState& state) {
   if (!isValidState(next)) return false;
   state = next; return true;
 }
-bool resolveBattleTurn(GameState& state, uint8_t slot) {
+bool resolveBattleTurn(GameState& state, uint8_t slot, BattleTurnReport* report) {
   if (!isValidState(state) || state.battle.status != BattleStatus::Active ||
       !canSelectMove(*partner(state), state.battle, slot)) return false;
   auto next = state;
   auto& b = next.battle;
+  BattleTurnReport turnReport;
   const auto& p = *partner(next);
   const auto wild = wildPokemon(b);
   const auto ps = calculateStats(p), ws = calculateStats(wild);
@@ -138,13 +139,22 @@ bool resolveBattleTurn(GameState& state, uint8_t slot) {
     const auto& defender = player ? wild : p;
     const uint8_t selected = player ? slot : wildSlot;
     const auto& m = selected == STRUGGLE_SLOT ? struggleMove() : *findMove(attacker.moves[selected]);
+    auto& action = turnReport.actions[turnReport.count++];
+    action.actor = player ? BattleActor::Player : BattleActor::Wild;
+    action.moveId = m.id;
+    const auto* defenderSpecies = findSpecies(defender.speciesId, defender.formId);
+    action.effectiveness = m.type == Type::None ? 4 :
+      typeEffectiveness(m.type, defenderSpecies->primaryType, defenderSpecies->secondaryType);
     if (selected < 4) --own.pp[selected];
-    if (!moveHits(m.accuracy, b.rngState)) return;
+    action.hit = moveHits(m.accuracy, b.rngState);
+    if (!action.hit) return;
     if (m.category == MoveCategory::Status) return;
     const auto variation = static_cast<uint8_t>(85 + battleRandom(b.rngState) % 16);
     const uint16_t damage = battleDamage(*findSpecies(attacker.speciesId, attacker.formId), attacker.level,
       player ? ps : ws, *findSpecies(defender.speciesId, defender.formId), player ? ws : ps, m, variation);
-    other.currentHp = damage >= other.currentHp ? 0 : static_cast<uint16_t>(other.currentHp - damage);
+    action.damage = damage >= other.currentHp ? other.currentHp : damage;
+    other.currentHp = static_cast<uint16_t>(other.currentHp - action.damage);
+    action.fainted = other.currentHp == 0;
   };
   act(playerFirst);
   if (b.player.currentHp && b.opponent.currentHp) act(!playerFirst);
@@ -153,7 +163,9 @@ bool resolveBattleTurn(GameState& state, uint8_t slot) {
   if (!b.opponent.currentHp) b.status = BattleStatus::Won;
   else if (!b.player.currentHp) b.status = BattleStatus::Lost;
   if (!isValidState(next)) return false;
-  state = next; return true;
+  state = next;
+  if (report) *report = turnReport;
+  return true;
 }
 bool acknowledgeBattle(GameState& state) {
   if (!isValidState(state) || (state.battle.status != BattleStatus::Won &&
