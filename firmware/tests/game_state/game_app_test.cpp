@@ -739,7 +739,24 @@ int main() {
     BUTTON_OK
   );
 
-  // 도망 placeholder.
+  // G5-A2: 도망 save 실패는 HP/PP/RNG/turn을 전혀 적용하지 않는다.
+  auto runSeeded =
+    GameApp::state();
+
+  runSeeded.battle.rngState =
+    4; // fixture 3종 모두 첫 roll=76이라 현재 단순 도주식에서 실패한다.
+
+  assert(
+    GameApp::saveState(
+      runSeeded
+    )
+  );
+
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assertCommandScreen();
+
   GameApp::handleButton(
     BUTTON_LEFT
   );
@@ -750,18 +767,16 @@ int main() {
     1
   );
 
-  GameApp::handleButton(
-    BUTTON_OK
-  );
+  const auto beforeRun =
+    stateBytes(
+      GameApp::state()
+    );
 
-  assert(
-    visible(
-      "도망"
-    ) &&
-    visible(
-      "아직 준비 중"
-    )
-  );
+  const unsigned beforeRunWrites =
+    FakeNvs::writes;
+
+  FakeNvs::partialWrite =
+    true;
 
   GameApp::handleButton(
     BUTTON_OK
@@ -771,10 +786,131 @@ int main() {
     stateBytes(
       GameApp::state()
     ) ==
-      commandState &&
-    FakeNvs::writes ==
-      commandWrites
+      beforeRun
   );
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::Active
+  );
+
+  assert(
+    visible(
+      "SAVE ERROR"
+    )
+  );
+
+  assert(
+    !visible(
+      "도망 실패!"
+    )
+  );
+
+  FakeNvs::partialWrite =
+    false;
+
+  // 저장 실패 후 재부팅해도 도망 시도 자체가 없었던 상태로 복원된다.
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) ==
+      beforeRun
+  );
+
+  assertCommandScreen();
+
+  // 같은 seed로 재시도하면 같은 도망 실패 결과가 저장된다.
+  GameApp::handleButton(
+    BUTTON_LEFT
+  );
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "도망 실패!"
+    ) &&
+    visible(
+      "상대가 공격한다"
+    )
+  );
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::Active
+  );
+
+  assert(
+    GameApp::state().battle.turn ==
+      1
+  );
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) !=
+      beforeRun
+  );
+
+  assert(
+    FakeNvs::writes >
+      beforeRunWrites
+  );
+
+  const auto afterFailedRun =
+    stateBytes(
+      GameApp::state()
+    );
+
+  const unsigned afterFailedRunWrites =
+    FakeNvs::writes;
+
+  // 첫 OK는 실패 메시지 → 실제 야생 행동 메시지로 이동한다.
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      firstWild->name
+    )
+  );
+
+  finishFeedback();
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::Active
+  );
+
+  assertCommandScreen();
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) ==
+      afterFailedRun &&
+    FakeNvs::writes ==
+      afterFailedRunWrites
+  );
+
+  // 저장된 실패 결과는 reboot에도 남지만 transient 메시지는 다시 재생하지 않는다.
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assert(
+    stateBytes(
+      GameApp::state()
+    ) ==
+      afterFailedRun
+  );
+
+  assertCommandScreen();
 
   // 싸운다 → 기존 기술 선택 화면.
   enterFight();
@@ -811,6 +947,17 @@ int main() {
     )
   );
 
+  char playerHpText[32];
+
+  snprintf(
+    playerHpText,
+    sizeof(playerHpText),
+    "HP %u/18",
+    static_cast<unsigned>(
+      GameApp::state().battle.player.currentHp
+    )
+  );
+
   assert(
     graphicsVisible(
       "피카츄"
@@ -819,7 +966,7 @@ int main() {
       "Lv.5"
     ) &&
     graphicsVisible(
-      "HP 18/18"
+      playerHpText
     )
   );
 
@@ -1413,6 +1560,110 @@ int main() {
     )
   );
 
+  // G5-A2 보정: 성공 도망은 BattleState를 None으로 저장한 뒤
+  // "도망 성공!" 일시 화면을 보여주고 OK에서 Home으로 돌아간다.
+  auto runSuccess =
+    GameApp::state();
+
+  assert(
+    setEncounter(
+      runSuccess.encounter,
+      19,
+      0,
+      2,
+      Gender::Male,
+      false
+    )
+  );
+
+  assert(
+    startBattle(
+      runSuccess
+    )
+  );
+
+  runSuccess.battle.rngState =
+    3; // 첫 roll=7, 도망 성공.
+
+  assert(
+    GameApp::saveState(
+      runSuccess
+    )
+  );
+
+  GameApp::init();
+  GameApp::drawGameTextScreen();
+
+  assertCommandScreen();
+
+  // Command index 0에서 LEFT 한 번이면 도망(index 3)으로 순환한다.
+  GameApp::handleButton(
+    BUTTON_LEFT
+  );
+
+  assertCommandViewport(
+    "포켓몬",
+    "도망",
+    1
+  );
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    GameApp::state().battle.status ==
+      BattleStatus::None
+  );
+
+  assert(
+    visible(
+      "도망 성공!"
+    )
+  );
+
+  assert(
+    visible(
+      "OK 확인"
+    )
+  );
+
+  assert(
+    !visible(
+      "도망 실패!"
+    )
+  );
+
+  assert(
+    partner(
+      GameApp::state()
+    )->currentHp ==
+      calculateStats(
+        *partner(
+          GameApp::state()
+        )
+      ).hp
+  );
+
+  // 성공 메시지 확인은 추가 저장 없이 Home으로만 이동한다.
+  const unsigned runSuccessWrites =
+    FakeNvs::writes;
+
+  GameApp::handleButton(
+    BUTTON_OK
+  );
+
+  assert(
+    visible(
+      "피카츄"
+    )
+  );
+
+  assert(
+    FakeNvs::writes ==
+      runSuccessWrites
+  );
+
   const unsigned finalWrites =
     FakeNvs::writes;
 
@@ -1443,6 +1694,6 @@ int main() {
   );
 
   std::puts(
-    "PASS app G5-A1: command menu, placeholders, Fight submenu, turn feedback, reboot and atomic save"
+    "PASS app G5-A2: command menu, Fight, deterministic run success/failure, counterattack, reboot and atomic save"
   );
 }

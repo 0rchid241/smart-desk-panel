@@ -81,7 +81,8 @@ enum class GameScreen {
   ExplorationComplete,
 
   WildEncounter,
-  Battle
+  Battle,
+  RunSuccess
 };
 
 enum class BattleUiMode : uint8_t {
@@ -89,7 +90,7 @@ enum class BattleUiMode : uint8_t {
   MoveSelection,
   BagUnavailable,
   PartyUnavailable,
-  RunUnavailable
+  RunFailed
 };
 
 GameScreen screen = GameScreen::Home;
@@ -772,7 +773,9 @@ void drawBattleCommandSelection(
   );
 
   oled.print(
-    "L/R          OK"
+    saveError
+      ? "SAVE ERROR / OK"
+      : "L/R          OK"
   );
 }
 
@@ -1004,6 +1007,33 @@ void drawBattleUnavailable(
   );
 }
 
+void drawBattleRunFailed(
+  Adafruit_SSD1306& oled
+) {
+  drawUtf8Text(
+    oled,
+    0,
+    0,
+    "도망 실패!"
+  );
+
+  drawUtf8Text(
+    oled,
+    0,
+    24,
+    "상대가 공격한다"
+  );
+
+  oled.setCursor(
+    0,
+    56
+  );
+
+  oled.print(
+    "OK"
+  );
+}
+
 void drawBattleText(
   Adafruit_SSD1306& oled
 ) {
@@ -1189,10 +1219,9 @@ void drawBattleText(
       );
       break;
 
-    case BattleUiMode::RunUnavailable:
-      drawBattleUnavailable(
-        oled,
-        "도망"
+    case BattleUiMode::RunFailed:
+      drawBattleRunFailed(
+        oled
       );
       break;
   }
@@ -1753,6 +1782,29 @@ void drawGameTextScreen() {
 
   if (
     screen ==
+    GameScreen::RunSuccess
+  ) {
+    drawUtf8Text(
+      oled,
+      0,
+      8,
+      "도망 성공!"
+    );
+
+    drawUtf8Text(
+      oled,
+      0,
+      40,
+      "OK 확인"
+    );
+
+    oled.display();
+
+    return;
+  }
+
+  if (
+    screen ==
     GameScreen::RegionSelect
   ) {
     drawUtf8Text(
@@ -2199,6 +2251,25 @@ void handleButton(
 ) {
   if (
     screen ==
+    GameScreen::RunSuccess
+  ) {
+    if (
+      button ==
+      BUTTON_OK
+    ) {
+      screen =
+        GameScreen::Home;
+
+      graphicsDirty = true;
+    }
+
+    drawGameTextScreen();
+
+    return;
+  }
+
+  if (
+    screen ==
     GameScreen::Battle
   ) {
     using namespace PokemonGame;
@@ -2299,11 +2370,67 @@ void handleButton(
 
                 break;
 
-              case 3:
-                battleUiMode =
-                  BattleUiMode::RunUnavailable;
+              case 3: {
+                auto next =
+                  gameSave.state;
+
+                BattleRunReport runReport;
+
+                if (
+                  attemptBattleRun(
+                    next,
+                    &runReport
+                  ) &&
+                  saveState(
+                    next
+                  )
+                ) {
+                  if (
+                    runReport.escaped
+                  ) {
+                    battleReport =
+                      BattleTurnReport{};
+
+                    battleActionIndex = 0;
+                    hitEffect = false;
+
+                    // BattleState는 이미 None으로 저장됐지만,
+                    // 성공 메시지는 일시 UI로 한 번 보여준 뒤 HOME으로 간다.
+                    screen =
+                      GameScreen::RunSuccess;
+
+                    resetBattleCommandUi();
+
+                    graphicsDirty = true;
+                  } else {
+                    battleReport =
+                      BattleTurnReport{};
+
+                    if (
+                      runReport.opponentActed
+                    ) {
+                      battleReport.actions[0] =
+                        runReport.opponentAction;
+
+                      battleReport.count = 1;
+                    }
+
+                    // 먼저 "도망 실패"를 보여주고,
+                    // OK를 누르면 저장된 상대 행동 결과를 표시한다.
+                    battleActionIndex =
+                      battleReport.count;
+
+                    hitEffect = false;
+
+                    battleUiMode =
+                      BattleUiMode::RunFailed;
+
+                    graphicsDirty = true;
+                  }
+                }
 
                 break;
+              }
 
               default:
                 break;
@@ -2366,12 +2493,28 @@ void handleButton(
 
         case BattleUiMode::BagUnavailable:
         case BattleUiMode::PartyUnavailable:
-        case BattleUiMode::RunUnavailable:
           if (
             button ==
             BUTTON_OK
           ) {
             resetBattleCommandUi();
+          }
+
+          break;
+
+        case BattleUiMode::RunFailed:
+          if (
+            button ==
+            BUTTON_OK
+          ) {
+            if (
+              battleReport.count > 0
+            ) {
+              battleActionIndex = 0;
+              beginActionFeedback();
+            } else {
+              resetBattleCommandUi();
+            }
           }
 
           break;

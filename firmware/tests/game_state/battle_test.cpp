@@ -18,15 +18,20 @@ GameState active(SpeciesId id = 19, uint8_t level = 2) {
   assert(startBattle(state));
   return state;
 }
+
 std::vector<uint8_t> snapshot(const GameState& state) {
-  GameSave save; save.state = state; return encode(save);
+  GameSave save;
+  save.state = state;
+  return encode(save);
 }
+
 void roundtrip(const GameState& state) {
   const auto bytes = snapshot(state);
   GameSave restored;
   assert(deserialize(bytes.data(), bytes.size(), restored) == DecodeResult::Ok);
   assert(snapshot(restored.state) == bytes);
 }
+
 void typeAndDamage() {
   using T = Type;
   assert(typeEffectiveness(T::Normal,T::Normal) == 4);
@@ -74,6 +79,7 @@ void typeAndDamage() {
   r = 2; assert(moveHits(50,r));  // xorshift32(2)=540738 =>38
   r = 0; assert(battleRandom(r) && r);
 }
+
 void turns() {
   auto legacyReady = createNewGame();
   assert(startExploration(legacyReady.exploration,1,1800000000,15));
@@ -103,7 +109,7 @@ void turns() {
   assert(state.battle.player.currentHp < 18 && state.battle.opponent.currentHp < 13);
   assert(state.battle.turn == 1);
   roundtrip(state);
-  // 실제 turn resolver에서 명중/빗나감 및 PP 소모를 함께 확인한다.
+
   auto miss = createNewGame(); miss.party.members[0].moves[0] = 21;
   assert(setEncounter(miss.encounter,19,0,2,Gender::Male,false));
   assert(startBattle(miss)); miss.battle.rngState = 1;
@@ -112,12 +118,15 @@ void turns() {
   assert(report.count == 2 && !report.actions[0].hit && report.actions[0].damage == 0);
   assert(!report.actions[0].fainted && report.actions[0].moveId == 21);
   assert(miss.battle.opponent.currentHp == hpBefore && miss.battle.player.pp[0] == 19);
+
   auto hit = createNewGame(); hit.party.members[0].moves[0] = 21;
   assert(setEncounter(hit.encounter,19,0,2,Gender::Male,false));
   assert(startBattle(hit)); hit.battle.rngState = 2;
   assert(resolveBattleTurn(hit,0) && hit.battle.opponent.currentHp < hpBefore);
+
   auto maxTurn = active(); maxTurn.battle.turn = UINT32_MAX;
   assert(resolveBattleTurn(maxTurn,0) && maxTurn.battle.turn == UINT32_MAX);
+
   auto status = active();
   assert(resolveBattleTurn(status,1,&report));
   assert(report.actions[0].hit && report.actions[0].moveId == 45 && report.actions[0].damage == 0);
@@ -126,25 +135,27 @@ void turns() {
   auto before = snapshot(status);
   const auto oldCount = report.count;
   assert(!resolveBattleTurn(status,0,&report) && snapshot(status) == before && report.count == oldCount);
+
   for (auto& pp : status.battle.player.pp) pp = 0;
   for (auto& pp : status.battle.opponent.pp) pp = 0;
   assert(canSelectMove(*partner(status),status.battle,STRUGGLE_SLOT));
   assert(nextBattleMove(*partner(status),status.battle,0,1) == STRUGGLE_SLOT);
   assert(resolveBattleTurn(status,STRUGGLE_SLOT));
   assert(status.battle.opponent.currentHp < 13);
-  // 빠른 플레이어가 기절시키면 야생 PP는 소모되지 않는다.
+
   auto won = active(); won.battle.opponent.currentHp = 1;
   assert(resolveBattleTurn(won,0,&report));
   assert(report.count == 1 && report.actions[0].damage == 1 && report.actions[0].fainted);
   assert(won.battle.status == BattleStatus::Won && won.battle.opponent.pp[0] == 35);
   assert(won.battle.player.currentHp == 18);
   roundtrip(won);
+
   auto lost = active(25,100); lost.battle.player.currentHp = 1;
   assert(resolveBattleTurn(lost,0,&report));
   assert(report.count == 1 && report.actions[0].actor == BattleActor::Wild && report.actions[0].fainted);
   assert(lost.battle.status == BattleStatus::Lost && lost.battle.player.pp[0] == 30);
   roundtrip(lost);
-  // 같은 속도: 같은 seed는 같은 순서. seed를 달리하면 양쪽 순서 모두 나온다.
+
   bool playerFirst = false, wildFirst = false;
   for (uint32_t seed = 1; seed < 30; ++seed) {
     auto tie = active(25,5); tie.battle.player.currentHp = 1; tie.battle.opponent.currentHp = 1;
@@ -155,14 +166,16 @@ void turns() {
     wildFirst |= tie.battle.status == BattleStatus::Lost;
   }
   assert(playerFirst && wildFirst);
+
   assert(acknowledgeBattle(lost) && lost.battle.status == BattleStatus::None);
   assert(partner(lost)->currentHp == 18 && partner(lost)->exp == 0);
   assert(!acknowledgeBattle(lost));
+
   auto zeroHp = createNewGame(); zeroHp.party.members[0].currentHp = 0;
   assert(setEncounter(zeroHp.encounter,16,0,3,Gender::Male,false));
   assert(startBattle(zeroHp) && zeroHp.battle.status == BattleStatus::Lost);
   assert(acknowledgeBattle(zeroHp) && partner(zeroHp)->currentHp == 18);
-  // fixture 전 종에서 PP를 소진해도 유한 턴 안에 결과에 도달한다.
+
   for (SpeciesId id : {SpeciesId(16),SpeciesId(19),SpeciesId(25)}) {
     auto play = active(id,4);
     for (auto& pp : play.battle.player.pp) pp = 0;
@@ -173,10 +186,80 @@ void turns() {
     assert(play.battle.status != BattleStatus::Active);
   }
 }
+
+void running() {
+  // seed 3의 첫 xorshift roll은 7. fixture 속도 범위에서 항상 성공한다.
+  auto escaped = active();
+  escaped.battle.rngState = 3;
+  BattleRunReport success;
+  assert(attemptBattleRun(escaped, &success));
+  assert(success.escaped && !success.opponentActed);
+  assert(escaped.battle.status == BattleStatus::None);
+  assert(partner(escaped)->currentHp == 18);
+  assert(isValidState(escaped));
+  roundtrip(escaped);
+
+  // seed 4의 첫 roll은 76. 테스트 fixture의 도주 확률(64~74%)보다 높아서 실패한다.
+  auto failed = active();
+  failed.battle.rngState = 4;
+  auto repeat = failed;
+  BattleRunReport report;
+  BattleRunReport repeatReport;
+  assert(attemptBattleRun(failed, &report));
+  assert(attemptBattleRun(repeat, &repeatReport));
+  assert(!report.escaped && report.opponentActed);
+  assert(!repeatReport.escaped && repeatReport.opponentActed);
+  assert(report.opponentAction.actor == BattleActor::Wild);
+  assert(report.opponentAction.moveId == 33);
+  assert(report.opponentAction.hit);
+  assert(report.opponentAction.damage == 18 - failed.battle.player.currentHp);
+  assert(failed.battle.opponent.currentHp == 13);
+  assert(failed.battle.opponent.pp[0] == 34);
+  assert(failed.battle.turn == 1);
+  assert(failed.battle.status == BattleStatus::Active);
+  assert(snapshot(failed) == snapshot(repeat));
+  assert(report.opponentAction.damage == repeatReport.opponentAction.damage);
+  assert(report.opponentAction.hit == repeatReport.opponentAction.hit);
+  roundtrip(failed);
+
+  // 실패 반격으로 쓰러지면 Lost가 된다.
+  auto fainted = active();
+  fainted.battle.player.currentHp = 1;
+  fainted.battle.rngState = 4;
+  BattleRunReport faintReport;
+  assert(attemptBattleRun(fainted, &faintReport));
+  assert(!faintReport.escaped && faintReport.opponentActed);
+  assert(faintReport.opponentAction.fainted);
+  assert(faintReport.opponentAction.damage == 1);
+  assert(fainted.battle.status == BattleStatus::Lost);
+  assert(fainted.battle.turn == 1);
+  roundtrip(fainted);
+
+  // PP가 모두 없으면 실패 반격도 발버둥으로 진행한다.
+  auto struggle = active();
+  for (auto& pp : struggle.battle.opponent.pp) pp = 0;
+  struggle.battle.rngState = 4;
+  BattleRunReport struggleReport;
+  assert(attemptBattleRun(struggle, &struggleReport));
+  assert(!struggleReport.escaped && struggleReport.opponentActed);
+  assert(struggleReport.opponentAction.moveId == 0);
+
+  // 유효하지 않은 상태에서는 state/report를 건드리지 않는다.
+  auto invalid = escaped; // 이미 Battle None.
+  BattleRunReport untouched;
+  untouched.escaped = true;
+  untouched.opponentActed = true;
+  const auto invalidBefore = snapshot(invalid);
+  assert(!attemptBattleRun(invalid, &untouched));
+  assert(snapshot(invalid) == invalidBefore);
+  assert(untouched.escaped && untouched.opponentActed);
+
+  static_assert(SAVE_VERSION == 4 && BATTLE_RECORD_SIZE == 40, "G5-A2 keeps v4 save layout");
+}
+
 void validationAndMigration() {
   auto state = active();
   const auto bytes = snapshot(state);
-  // v4 Battle record: status0 id1 wild5 moves12 playerHP20/PP22 wildHP26/PP28 turn32 rng36.
   for (const size_t offset : {size_t(0),size_t(1),size_t(5),size_t(6),size_t(8),size_t(9),size_t(10),
        size_t(11),size_t(12),size_t(20),size_t(22),size_t(24),size_t(26),size_t(28),size_t(36)}) {
     auto bad = bytes; const size_t pos = bytes.size() - BATTLE_RECORD_SIZE;
@@ -192,14 +275,13 @@ void validationAndMigration() {
   invalid = state; invalid.battle.status = BattleStatus::None; assert(!isValidState(invalid));
   invalid = state; invalid.encounter = state.battle.wild; assert(!isValidState(invalid));
   invalid = state; assert(startExploration(invalid.exploration,1,1800000000,15)); assert(!isValidState(invalid));
-  // v3에 있던 모든 필드는 유지하고 Battle만 None으로 추가한다.
+
   GameSave old; old.state = createNewGame(); old.sequence = 82;
   old.state.party.members[0].exp = 123; old.state.party.members[0].friendship = 99;
   assert(startExploration(old.state.exploration,1,1800000000,15));
   assert(updateExploration(old.state.exploration,1800000015));
   assert(setEncounter(old.state.encounter,16,0,3,Gender::Female,true));
   auto v3 = legacyV2Record(old);
-  // Frozen G3 필드 순서. v4 encoder를 사용하지 않는다.
   const auto& e = old.state.encounter;
   v3.push_back(static_cast<uint8_t>(e.status));
   v3.push_back(static_cast<uint8_t>(e.speciesId));
@@ -226,7 +308,11 @@ void validationAndMigration() {
   assert(encode(loaded) == encode(reboot));
 }
 }
+
 void battleTests() {
-  typeAndDamage(); turns(); validationAndMigration();
-  std::puts("PASS battle: types, moves, damage/STAB, accuracy, PP, speed/ties, faint, results, v4 codec, v3 migration");
+  typeAndDamage();
+  turns();
+  running();
+  validationAndMigration();
+  std::puts("PASS battle: types, moves, turns, deterministic run success/failure, counterattack, v4 codec, v3 migration");
 }

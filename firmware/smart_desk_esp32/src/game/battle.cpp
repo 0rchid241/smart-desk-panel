@@ -11,6 +11,7 @@ PokemonInstance wildPokemon(const BattleState& b) {
   for (int i = 0; i < 4; ++i) p.moves[i] = b.wildMoves[i];
   return p;
 }
+
 namespace {
 bool validPP(const MoveId (&moves)[4], const BattleCombatant& p) {
   for (int i = 0; i < 4; ++i) {
@@ -20,11 +21,13 @@ bool validPP(const MoveId (&moves)[4], const BattleCombatant& p) {
   }
   return true;
 }
+
 bool emptyCombatant(const BattleCombatant& c) {
   if (c.currentHp) return false;
   for (auto pp : c.pp) if (pp) return false;
   return true;
 }
+
 void initCombatant(BattleCombatant& c, const PokemonInstance& p) {
   c.currentHp = p.currentHp;
   for (int i = 0; i < 4; ++i) {
@@ -32,7 +35,146 @@ void initCombatant(BattleCombatant& c, const PokemonInstance& p) {
     c.pp[i] = m ? m->maxPP : 0;
   }
 }
+
+uint8_t chooseWildMove(BattleState& b, const PokemonInstance& wild) {
+  uint8_t options[4] = {};
+  uint8_t count = 0;
+
+  for (uint8_t i = 0; i < 4; ++i) {
+    const auto* m = findMove(wild.moves[i]);
+    if (m && m->category != MoveCategory::Status && b.opponent.pp[i]) {
+      options[count++] = i;
+    }
+  }
+
+  // 공격 PP가 없으면 남은 변화 기술도 사용한다.
+  if (!count) {
+    for (uint8_t i = 0; i < 4; ++i) {
+      if (findMove(wild.moves[i]) && b.opponent.pp[i]) {
+        options[count++] = i;
+      }
+    }
+  }
+
+  if (!count) {
+    return STRUGGLE_SLOT;
+  }
+
+  return options[battleRandom(b.rngState) % count];
 }
+
+void resolveWildRunCounterattack(
+  BattleState& b,
+  const PokemonInstance& player,
+  const PokemonInstance& wild,
+  BattleActionReport& action
+) {
+  const uint8_t selected =
+    chooseWildMove(
+      b,
+      wild
+    );
+
+  const auto& move =
+    selected == STRUGGLE_SLOT
+      ? struggleMove()
+      : *findMove(
+          wild.moves[
+            selected
+          ]
+        );
+
+  action.actor = BattleActor::Wild;
+  action.moveId = move.id;
+
+  const auto* playerSpecies =
+    findSpecies(
+      player.speciesId,
+      player.formId
+    );
+
+  action.effectiveness =
+    move.type == Type::None
+      ? 4
+      : typeEffectiveness(
+          move.type,
+          playerSpecies->primaryType,
+          playerSpecies->secondaryType
+        );
+
+  if (
+    selected < 4
+  ) {
+    --b.opponent.pp[
+      selected
+    ];
+  }
+
+  action.hit =
+    moveHits(
+      move.accuracy,
+      b.rngState
+    );
+
+  if (
+    !action.hit ||
+    move.category ==
+      MoveCategory::Status
+  ) {
+    return;
+  }
+
+  const auto playerStats =
+    calculateStats(
+      player
+    );
+
+  const auto wildStats =
+    calculateStats(
+      wild
+    );
+
+  const auto variation =
+    static_cast<uint8_t>(
+      85 +
+      battleRandom(
+        b.rngState
+      ) %
+      16
+    );
+
+  const uint16_t damage =
+    battleDamage(
+      *findSpecies(
+        wild.speciesId,
+        wild.formId
+      ),
+      wild.level,
+      wildStats,
+      *playerSpecies,
+      playerStats,
+      move,
+      variation
+    );
+
+  action.damage =
+    damage >=
+      b.player.currentHp
+      ? b.player.currentHp
+      : damage;
+
+  b.player.currentHp =
+    static_cast<uint16_t>(
+      b.player.currentHp -
+      action.damage
+    );
+
+  action.fainted =
+    b.player.currentHp ==
+    0;
+}
+} // namespace
+
 bool isValidBattle(const BattleState& b, const PokemonInstance* p) {
   if (b.status == BattleStatus::None) {
     if (b.playerId || b.turn || b.rngState || b.wild.status != EncounterStatus::None ||
@@ -55,14 +197,17 @@ bool isValidBattle(const BattleState& b, const PokemonInstance* p) {
     default: return false;
   }
 }
+
 uint32_t battleRandom(uint32_t& state) {
   if (!state) state = 0x6d2b79f5u;
   state ^= state << 13; state ^= state >> 17; state ^= state << 5;
   return state;
 }
+
 bool moveHits(uint8_t accuracy, uint32_t& rng) {
   return accuracy <= 100 && battleRandom(rng) % 100 < accuracy;
 }
+
 uint16_t battleDamage(const PokemonSpecies& a, uint8_t level, const Stats& as,
                       const PokemonSpecies& d, const Stats& ds,
                       const MoveData& m, uint8_t variation) {
@@ -80,12 +225,14 @@ uint16_t battleDamage(const PokemonSpecies& a, uint8_t level, const Stats& as,
   if (!damage) damage = 1;
   return static_cast<uint16_t>(damage > UINT16_MAX ? UINT16_MAX : damage);
 }
+
 bool canSelectMove(const PokemonInstance& p, const BattleState& b, uint8_t slot) {
   if (slot < 4) return findMove(p.moves[slot]) && b.player.pp[slot];
   if (slot != STRUGGLE_SLOT) return false;
   for (uint8_t i = 0; i < 4; ++i) if (canSelectMove(p, b, i)) return false;
   return true;
 }
+
 uint8_t nextBattleMove(const PokemonInstance& p, const BattleState& b, uint8_t current, int direction) {
   for (int step = 1; step <= 5; ++step) {
     const auto slot = static_cast<uint8_t>((static_cast<int>(current % 5) + (direction < 0 ? -step : step) + 5) % 5);
@@ -93,6 +240,7 @@ uint8_t nextBattleMove(const PokemonInstance& p, const BattleState& b, uint8_t c
   }
   return STRUGGLE_SLOT;
 }
+
 bool startBattle(GameState& state) {
   if (!isValidState(state) || state.battle.status != BattleStatus::None ||
       state.encounter.status != EncounterStatus::Ready) return false;
@@ -113,6 +261,7 @@ bool startBattle(GameState& state) {
   if (!isValidState(next)) return false;
   state = next; return true;
 }
+
 bool resolveBattleTurn(GameState& state, uint8_t slot, BattleTurnReport* report) {
   if (!isValidState(state) || state.battle.status != BattleStatus::Active ||
       !canSelectMove(*partner(state), state.battle, slot)) return false;
@@ -167,6 +316,155 @@ bool resolveBattleTurn(GameState& state, uint8_t slot, BattleTurnReport* report)
   if (report) *report = turnReport;
   return true;
 }
+
+bool attemptBattleRun(GameState& state, BattleRunReport* report) {
+  if (
+    !isValidState(
+      state
+    ) ||
+    state.battle.status !=
+      BattleStatus::Active
+  ) {
+    return false;
+  }
+
+  auto next =
+    state;
+
+  auto& b =
+    next.battle;
+
+  BattleRunReport runReport;
+
+  const auto& player =
+    *partner(
+      next
+    );
+
+  const auto wild =
+    wildPokemon(
+      b
+    );
+
+  const auto playerStats =
+    calculateStats(
+      player
+    );
+
+  const auto wildStats =
+    calculateStats(
+      wild
+    );
+
+  // G5-A2 단순 도주식:
+  // 기본 60%, 속도 차이 1마다 2% 보정, 최종 25~90%로 제한한다.
+  // 시도 횟수는 저장하지 않아 SAVE_VERSION=4를 그대로 유지한다.
+  int chance =
+    60 +
+    (
+      static_cast<int>(
+        playerStats.speed
+      ) -
+      static_cast<int>(
+        wildStats.speed
+      )
+    ) *
+    2;
+
+  if (
+    chance < 25
+  ) {
+    chance = 25;
+  } else if (
+    chance > 90
+  ) {
+    chance = 90;
+  }
+
+  const uint32_t roll =
+    battleRandom(
+      b.rngState
+    ) %
+    100u;
+
+  runReport.escaped =
+    roll <
+    static_cast<uint32_t>(
+      chance
+    );
+
+  if (
+    runReport.escaped
+  ) {
+    b =
+      BattleState{};
+
+    if (
+      !isValidState(
+        next
+      )
+    ) {
+      return false;
+    }
+
+    state =
+      next;
+
+    if (
+      report
+    ) {
+      *report =
+        runReport;
+    }
+
+    return true;
+  }
+
+  runReport.opponentActed =
+    true;
+
+  resolveWildRunCounterattack(
+    b,
+    player,
+    wild,
+    runReport.opponentAction
+  );
+
+  if (
+    b.turn !=
+    UINT32_MAX
+  ) {
+    ++b.turn;
+  }
+
+  if (
+    !b.player.currentHp
+  ) {
+    b.status =
+      BattleStatus::Lost;
+  }
+
+  if (
+    !isValidState(
+      next
+    )
+  ) {
+    return false;
+  }
+
+  state =
+    next;
+
+  if (
+    report
+  ) {
+    *report =
+      runReport;
+  }
+
+  return true;
+}
+
 bool acknowledgeBattle(GameState& state) {
   if (!isValidState(state) || (state.battle.status != BattleStatus::Won &&
       state.battle.status != BattleStatus::Lost)) return false;
