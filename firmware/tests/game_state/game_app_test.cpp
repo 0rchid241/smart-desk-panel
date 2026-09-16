@@ -1,4 +1,4 @@
-#include "storage_test_support.h"
+#include "capture_test_support.h"
 #include "game_app.h"
 #include "save_storage.h"
 #include "Preferences.h"
@@ -2267,20 +2267,29 @@ int main() {
   assert(setEncounter(fullBattle.encounter,19,0,2,Gender::Male,false) && startBattle(fullBattle));
   fullBattle.progress.masterBallCount = 1;
   assert(GameApp::saveState(fullBattle)); GameApp::init(); GameApp::drawGameTextScreen(); enterBag();
+  const auto beforeFullNvs = FakeNvs::data;
+  const auto beforeFullFiles = FakeLittleFS::files;
+  GameSave fullSave;
+  assert(GameSaveStorage::load(fullSave) == GameSaveStorage::LoadResult::Loaded);
+  installCaptureBoxFixture(fullSave, BOX_CAPACITY, fullSave.boxRoot.generation + 1);
+  GameApp::init(); GameApp::drawGameTextScreen(); enterBag();
   const auto fullBytes = stateBytes(GameApp::state());
   const auto fullWrites = FakeNvs::writes;
   GameApp::handleButton(BUTTON_OK);
-  assert(visible("파티가 가득 찼다") && visible("박스 준비 중"));
+  assert(visible("박스가 가득 찼다") && visible("OK 확인"));
   GameApp::handleButton(BUTTON_RIGHT); // 안내 중 선택 입력은 무시.
   for (int i=0;i<30;++i) { GameApp::update(); GameApp::updatePokemonAnimation(MODE_GAME); }
   assert(stateBytes(GameApp::state()) == fullBytes && FakeNvs::writes == fullWrites);
   GameApp::handleButton(BUTTON_OK); assert(visible("몬스터볼"));
   for (int i=0;i<3;++i) GameApp::handleButton(BUTTON_RIGHT);
   assert(visible("마스터볼")); GameApp::handleButton(BUTTON_OK);
-  assert(visible("파티가 가득 찼다") && stateBytes(GameApp::state()) == fullBytes);
+  assert(visible("박스가 가득 찼다") && stateBytes(GameApp::state()) == fullBytes);
   assert(FakeNvs::writes == fullWrites);
   GameApp::init(); GameApp::drawGameTextScreen(); assertCommandScreen();
   assert(stateBytes(GameApp::state()) == fullBytes);
+
+  FakeNvs::data = beforeFullNvs; FakeLittleFS::files = beforeFullFiles;
+  GameApp::init();
 
   auto exhaustedId = createNewGame();
   assert(setEncounter(exhaustedId.encounter,19,0,2,Gender::Male,false) && startBattle(exhaustedId));
@@ -2295,7 +2304,7 @@ int main() {
   // 독립적인 거부 시나리오 후, 앞서 저장 성공한 소유 fixture로 복귀해 재로드 검증.
   assert(GameApp::saveState(capturedState)); GameApp::init(); GameApp::drawGameTextScreen();
   assert(stateBytes(GameApp::state()) == capturedBytes);
-  std::puts("PASS app C1: atomic ownership/master retry, exactly-once IDs, full-party no-save, animation/reboot ownership");
+  std::puts("PASS app C1: atomic ownership/master retry, exactly-once IDs, full-Box no-save, animation/reboot ownership");
 
   // Both NVS roots reference unavailable Box data: fallback display must never
   // create a replacement save or enable writes over the existing records.
@@ -2354,6 +2363,58 @@ int main() {
   );
 
   std::puts(
-    "PASS app C1.1: party viewer, C1 ownership, capture animation, full-party guard, reboot and atomic save"
+    "PASS app C1.1: party viewer, C1 ownership, capture animation, full-Box guard, reboot and atomic save"
   );
+  // Independent C fixtures exercise the real coordinator and UI transaction gates.
+  for (unsigned scenario = 0; scenario < 3; ++scenario) {
+    resetStorageFakes(); GameApp::init();
+    auto next = GameApp::state();
+    while (next.party.count < PARTY_CAPACITY) {
+      auto pokemon = next.party.members[0];
+      pokemon.instanceId = next.progress.nextInstanceId++;
+      next.party.members[next.party.count++] = pokemon;
+    }
+    next.progress.ballTier = 2; next.progress.masterBallCount = 1;
+    assert(setEncounter(next.encounter,19,0,7,Gender::Female,true) && startBattle(next));
+    next.battle.opponent.currentHp = 3;
+    assert(GameApp::saveState(next)); GameApp::init(); GameApp::drawGameTextScreen(); enterBag();
+    for (int i = 0; i < 3; ++i) GameApp::handleButton(BUTTON_RIGHT);
+    assert(visible("마스터볼"));
+    const auto before = stateBytes(GameApp::state());
+    if (scenario == 0) FakeNvs::rejectWrite = true;
+    if (scenario == 1) FakeNvs::failReadAfterWrite = true;
+    if (scenario == 2) FakeLittleFS::writeBudget = 100;
+    GameApp::handleButton(BUTTON_OK);
+    assert(visible("SAVE ERROR") && !visible("포획 중...") && !visible("박스로 전송!"));
+    assert(stateBytes(GameApp::state()) == before);
+    assert(FakeLittleFS::files.size() == 2);
+    FakeNvs::rejectWrite = FakeNvs::failReadAfterWrite = FakeNvs::failRead = false;
+    FakeLittleFS::writeBudget = std::numeric_limits<size_t>::max();
+    const auto writes = FakeNvs::writes;
+    GameApp::handleButton(BUTTON_OK);
+    if (scenario == 1) {
+      assert(visible("SAVE ERROR") && stateBytes(GameApp::state()) == before);
+      assert(FakeNvs::writes == writes && FakeLittleFS::files.size() == 2);
+    } else {
+      assert(visible("포획 중...") && FakeNvs::writes == writes + 1);
+      assert(GameApp::state().party.count == 3);
+      finishCaptureAnimation("포획 성공!");
+      assert(visible("박스로 전송!") && !visible("파티에 합류!"));
+      GameApp::handleButton(BUTTON_OK);
+    }
+    GameApp::init(); GameApp::drawGameTextScreen();
+    assert(visible("피카츄") && !visible("포획 성공!") && !visible("포획 중..."));
+    assert(GameApp::state().party.count == 3 && GameApp::state().battle.status == BattleStatus::None);
+    assert(GameApp::state().progress.masterBallCount == 0 && GameApp::state().progress.nextInstanceId == 5);
+    GameSave loaded;
+    assert(GameSaveStorage::load(loaded) == GameSaveStorage::LoadResult::Loaded);
+    assert(loaded.boxRoot.occupiedCount == 1);
+    BoxStorage::Snapshot box;
+    assert(box.open({loaded.boxRoot.storeId,loaded.boxRoot.generation}) == BoxStorage::Result::Ok);
+    PokemonInstance caught;
+    assert(box.readSlot(0,caught) == BoxStorage::Result::Ok);
+    assert(caught.instanceId == 4 && caught.speciesId == 19 && caught.shiny && caught.currentHp == 3);
+  }
+  std::puts("PASS app C: full Box/ID notices, Box success animation/message, write failures/retry, Indeterminate lock/reboot");
+
 }

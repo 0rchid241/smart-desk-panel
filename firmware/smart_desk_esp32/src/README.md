@@ -688,3 +688,66 @@ git diff --check PASS. 두 build/partitions.csv는 sketch-local 파일과 hash�
 컴파일러 Flash/RAM은 asset 1,516,976/52,408 bytes, fallback 1,514,092/52,400 bytes입니다.
 partition generator의 name 'spiffs'와 subtype 0x83 불일치 경고는 default label을 유지하기 위한
 의도된 이름/subtype 조합이며 오류가 아닙니다. 저장 코드 수정 및 보드 upload/format은 없습니다.
+
+## G5-C2-C — Party full 포획 → Box
+
+`battle.*`는 `CaptureDestination::Party/Box`를 구분합니다. `canUseCaptureBall`은
+볼/배틀/ID 공통 조건만 검사하고, Party destination은 별도로 빈칸을 요구합니다.
+성공 report의 `caught`는 C1과 같은 필드(야생 HP/기술/폼/성별/shiny, EXP/친밀도 0)의
+영구 개체입니다. 실패 report의 caught.instanceId는 0이며 BattleState/wire에는 포함하지 않습니다.
+전투 core에는 LittleFS/NVS 의존성이 없습니다.
+
+`capture_storage.*`가 GameApp의 포획 저장을 조정합니다.
+
+- Party < 3: 기존 Party append → main v5 save. Box snapshot/root/count는 변경하지 않습니다.
+- Party == 3: B2 write gate → 현재 NVS BoxRoot의 pair/snapshot 검증 → 빈 slot 및 새 generation
+  사전 검사 → core candidate/report → 성공일 때만 B1 Insert snapshot → 전체 validate →
+  metadata에서 candidate BoxRoot 생성 → B2 saveDetailed → Committed일 때만 live/report 반영.
+- 일반 볼 포획 실패는 반격/HP/turn/RNG만 일반 v5 save로 저장하며 snapshot을 만들지 않습니다.
+- Box 2048칸 만재/ID UINT32_MAX/새 generation 불가 시 RNG·소비·상태·파일·NVS 변경 없이 안내합니다.
+  현재 generation이 UINT64_MAX이면 증가하지 않습니다. 현재 root+1부터 최대 8개 경로를 검사하고,
+  충돌하면 다음 세대로 건너뜁니다. orphan을 채택하거나 기존 파일을 덮어쓰지 않습니다.
+- snapshot write/flush/reopen/validate 실패는 main commit 전 중단합니다.
+  NotCommitted는 live를 유지하고 SAVE ERROR를 표시하며 재시도를 허용합니다.
+  Indeterminate는 성공 연출 없이 live를 유지하고, B2 canWrite gate로 추가 snapshot/main write를
+  막습니다. read 오류가 사라져도 load 전에는 재시도하지 않습니다. 자동 삭제/format은 없습니다.
+- Committed 뒤에만 기존 성공 3회/실패 1~2회 흔들림을 시작합니다. 성공 위치에 따라
+  "파티에 합류!" 또는 "박스로 전송!"을 표시합니다. 만재는 "박스가 가득 찼다 / OK 확인"입니다.
+  재부팅은 B2 A/B pair validation으로 복구하며 성공 메시지는 복원하지 않습니다.
+
+Box 성공마다 49,472 bytes의 immutable snapshot 1개가 추가되고 source도 남습니다.
+실패한 destination도 orphan으로 보존하므로 재시도 시 파일이 더 남을 수 있습니다.
+896 KiB 영역의 단순 나눗셈은 최대 18개 파일이지만 LittleFS metadata/여유 블록 때문에 실제 수는
+더 적습니다. Box의 논리 용량 2048과 GC 없이 가능한 반복 mutation 횟수는 별개입니다.
+공간 부족은 저장 오류로 처리하며 현재 pair를 유지합니다. 8개 후보 경로가 모두 존재하면 검사도
+중단하므로 반복 실패 후에는 정리가 필요할 수 있습니다. 이번 단계에는 global GC가 없습니다.
+
+후속 GC는 load 또는 확정 commit 후 저장 coordinator에 연결해야 합니다. save_a와 save_b가
+각각 참조하는 두 BoxRoot(같을 수도 있음)를 모두 검증·보호한 뒤, 참조되지 않는 파일만 삭제해야
+합니다. Indeterminate/읽기 오류/미지원 버전처럼 참조를 확정할 수 없으면 정리하지 않습니다.
+RAM live root 하나만 기준으로 지우면 A/B rollback을 잃습니다.
+
+G5-C2-D Box viewer는 load로 확정된 root와 B1 Snapshot의 occupied/readSlot/findInstance/
+findSpecies를 이용해 필요한 슬롯만 읽으면 됩니다. GameApp의 root는 현재 private이므로 다음
+단계에서 작은 읽기 전용 접근 경계를 추가해야 합니다. 이번에는 Box UI/교체/방생/GC가 없습니다.
+SAVE_VERSION=5, BoxRoot/wire, BOX_CAPACITY=2048, B1 포맷과 B2 transaction은 유지합니다.
+
+검증: 기존 run.ps1에 capture_storage_test와 full-Box/UI fixture를 연결했습니다. Party 1/2 capture,
+Box 성공 필드/중복/재부팅/이전 pair rollback, 일반 볼 실패, 만재/ID/세대 경계, 손상 root,
+8회 collision 한도, write/flush/reopen/validate 실패, NotCommitted retry, Indeterminate의
+commit/미commit 재부팅 결과, 실제 GameApp 성공 문구/연출/저장 오류를 검사합니다.
+
+C 최종 검증: run.ps1 전체 PASS (MSVC /W4 /WX, core/app/asset app/B1 Box),
+git diff --check PASS. ESP32 core 3.3.11 / ESP32 Dev Module / Huge APP 전체 compile/link PASS:
+
+| G5-C2-C 빌드 | Flash | 전역 RAM |
+| --- | ---: | ---: |
+| 로컬 애셋 포함 | 1,518,844 bytes (48%) | 52,456 bytes (16%) |
+| 애셋 없는 fallback | 1,515,900 bytes (48%) | 52,448 bytes (16%) |
+
+기존 build/firmware-g5-c2-b1 및 build/firmware-g5-c2-b1-fallback 경로를 재사용한 C 산출물입니다.
+fallback 소스의 .h/.cpp/.ino 및 partitions.csv는 원본과 동일하고 local_game_assets는 없습니다.
+두 최종 partitions.bin의 MD5와 LittleFS subtype 0x83, NVS 0x9000/0x5000 및 나머지 배치를
+확인했습니다. 기존 label 'spiffs'/subtype 0x83 경고는 위 B2.1 설명과 같습니다.
+실기 upload/format/commit/push는 실행하지 않았습니다. 실행 중 heap/stack 및 Box가 커졌을 때의
+전체 snapshot 검증 지연은 실기에서 별도 확인해야 합니다.

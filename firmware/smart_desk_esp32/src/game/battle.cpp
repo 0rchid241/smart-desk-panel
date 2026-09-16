@@ -494,8 +494,7 @@ bool attemptBattleRun(GameState& state, BattleRunReport* report) {
 }
 
 bool canUseCaptureBall(const GameState& state, CaptureBall ball) {
-  // C1에는 Box가 없다. RNG/볼 소비 전에 소유 공간과 다음 ID를 확보한다.
-  if (state.party.count >= PARTY_CAPACITY || state.progress.nextInstanceId == UINT32_MAX)
+  if (state.progress.nextInstanceId == UINT32_MAX)
     return false;
   if (
     !isValidState(
@@ -623,8 +622,11 @@ uint8_t captureChance(const GameState& state, CaptureBall ball) {
 bool attemptBattleCapture(
   GameState& state,
   CaptureBall ball,
-  BattleCaptureReport* report
+  BattleCaptureReport* report,
+  CaptureDestination destination
 ) {
+  if ((destination != CaptureDestination::Party && destination != CaptureDestination::Box) ||
+      (destination == CaptureDestination::Party && state.party.count >= PARTY_CAPACITY)) return false;
   if (
     !canUseCaptureBall(
       state,
@@ -641,6 +643,7 @@ bool attemptBattleCapture(
     next.battle;
 
   BattleCaptureReport captureReport;
+  captureReport.destination = destination;
   captureReport.ball =
     ball;
   captureReport.wild =
@@ -685,7 +688,8 @@ bool attemptBattleCapture(
     caught.exp = 0;
     caught.friendship = 0; // C1 fixture: 종별 초기 친밀도는 후속 단계에서 정의한다.
     for (uint8_t i = 0; i < 4; ++i) caught.moves[i] = b.wildMoves[i];
-    next.party.members[next.party.count++] = caught;
+    captureReport.caught = caught;
+    if (destination == CaptureDestination::Party) next.party.members[next.party.count++] = caught;
     registerCaught(next.pokedex, caught.speciesId, caught.shiny);
 
     // 소유/도감/볼 소비와 전투 종료가 같은 후보 상태에 포함된다.

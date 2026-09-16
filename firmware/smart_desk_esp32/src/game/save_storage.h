@@ -11,6 +11,8 @@ LoadResult validatePair(const PokemonGame::GameSave& save);
 // Explicit Missing/legacy path. Creates an empty Box before the v5 NVS commit.
 CommitResult initialize(PokemonGame::GameSave& save);
 CommitResult saveDetailed(PokemonGame::GameSave& save);
+// Read-only gate for coordinators before creating files or consuming RNG.
+bool canWrite();
 // Call load first. Only a verified successful write advances save.sequence.
 // Indeterminate blocks all writes until load() resolves persistent A/B state.
 bool save(PokemonGame::GameSave& save);

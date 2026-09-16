@@ -52,7 +52,10 @@ enum class CaptureBall : uint8_t {
   Master = 3
 };
 
+enum class CaptureDestination : uint8_t { Party, Box };
 struct BattleCaptureReport {
+  CaptureDestination destination = CaptureDestination::Party;
+  PokemonInstance caught; // Valid only when captured; otherwise instanceId == 0.
   CaptureBall ball = CaptureBall::Poke;
   EncounterState wild;
   uint8_t chance = 0;
@@ -79,10 +82,11 @@ bool resolveBattleTurn(GameState& state, uint8_t playerSlot, BattleTurnReport* r
 bool attemptBattleRun(GameState& state, BattleRunReport* report = nullptr);
 // 일반 볼은 무제한 fixture이며 progress.ballTier(0~2)로 해금한다.
 // 마스터볼은 progress.masterBallCount를 실제로 1개 소비한다.
-// C1: 빈 파티 슬롯과 발급 가능한 nextInstanceId가 있어야 시도할 수 있다.
+// Common ball/battle/ID checks only. Caller reserves Box capacity before attempting.
 bool canUseCaptureBall(const GameState& state, CaptureBall ball);
 uint8_t captureChance(const GameState& state, CaptureBall ball);
 bool attemptBattleCapture(GameState& state, CaptureBall ball,
-                          BattleCaptureReport* report = nullptr);
+                          BattleCaptureReport* report = nullptr,
+                          CaptureDestination destination = CaptureDestination::Party);
 bool acknowledgeBattle(GameState& state);
 }

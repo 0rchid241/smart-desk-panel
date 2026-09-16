@@ -547,9 +547,11 @@ void v2MigrationTests() {
 void battleTests();
 void saveWireTests();
 void savePairTests();
+void captureStorageTests();
 int main() {
   saveWireTests();
   savePairTests();
+  captureStorageTests();
   battleTests();
   codecTests();
   storageTests();

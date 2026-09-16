@@ -217,5 +217,6 @@ CommitResult initialize(PokemonGame::GameSave& save) {
   // Orphans are deliberately retained, including uncertain commits.
   return result;
 }
+bool canWrite() { return writable && !indeterminate; }
 bool save(PokemonGame::GameSave& save) { return saveDetailed(save) == CommitResult::Committed; }
 }

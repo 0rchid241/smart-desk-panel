@@ -1,6 +1,7 @@
 #include "game_app.h"
 #include "encounter.h"
 #include "save_storage.h"
+#include "capture_storage.h"
 #include "../hardware/displays.h"
 #include "../core/app_config.h"
 #include "../services/network_time.h"
@@ -111,6 +112,7 @@ uint8_t battleBallIndex = 0;
 uint8_t battleBallViewportTop = 0;
 PokemonGame::BattleTurnReport battleReport;
 PokemonGame::BattleCaptureReport battleCaptureReport;
+CaptureStorage::Result captureUnavailable = CaptureStorage::Result::Unavailable;
 uint8_t battleActionIndex = 0;
 bool hitEffect = false;
 unsigned long hitEffectStarted = 0;
@@ -1737,10 +1739,12 @@ void drawBattleText(
       );
       break;
     case BattleUiMode::CaptureUnavailable:
-      drawUtf8Text(oled, 0, 0, gameSave.state.party.count >= PokemonGame::PARTY_CAPACITY
-        ? "파티가 가득 찼다" : "포획 불가");
-      drawUtf8Text(oled, 0, 24, gameSave.state.party.count >= PokemonGame::PARTY_CAPACITY
-        ? "박스 준비 중" : "개체 ID 부족");
+      drawUtf8Text(oled, 0, 0, captureUnavailable == CaptureStorage::Result::BoxFull
+        ? "박스가 가득 찼다" : "포획 불가");
+      if (captureUnavailable == CaptureStorage::Result::IdExhausted)
+        drawUtf8Text(oled, 0, 24, "개체 ID 부족");
+      else if (captureUnavailable == CaptureStorage::Result::GenerationExhausted)
+        drawUtf8Text(oled, 0, 24, "박스 세대 부족");
       drawUtf8Text(oled, 0, 48, "OK 확인");
       break;
   }
@@ -2413,7 +2417,8 @@ void drawGameTextScreen() {
       oled,
       0,
       36,
-      "파티에 합류!"
+      battleCaptureReport.destination == PokemonGame::CaptureDestination::Box
+        ? "박스로 전송!" : "파티에 합류!"
     );
 
     oled.setCursor(0, 56);
@@ -3358,28 +3363,19 @@ void handleButton(
             ) {
               resetBattleCommandUi();
               resetBattleBallUi();
-            } else if (gameSave.state.party.count >= PARTY_CAPACITY ||
-                       gameSave.state.progress.nextInstanceId == UINT32_MAX) {
-              // 포획 시도/저장/연출 없이 안내만 표시한다.
-              battleUiMode = BattleUiMode::CaptureUnavailable;
             } else {
-              auto next =
-                gameSave.state;
-
               BattleCaptureReport captureReport;
-
-              if (
-                attemptBattleCapture(
-                  next,
-                  balls[
-                    battleBallIndex
-                  ],
-                  &captureReport
-                ) &&
-                saveState(
-                  next
-                )
-              ) {
+              const auto result = CaptureStorage::attempt(gameSave, balls[battleBallIndex], captureReport);
+              if (result == CaptureStorage::Result::BoxFull ||
+                  result == CaptureStorage::Result::IdExhausted ||
+                  result == CaptureStorage::Result::GenerationExhausted ||
+                  result == CaptureStorage::Result::Unavailable) {
+                captureUnavailable = result;
+                battleUiMode = BattleUiMode::CaptureUnavailable;
+              } else if (result != CaptureStorage::Result::Committed) {
+                saveError = true;
+              } else {
+                saveError = false;
                 battleCaptureReport =
                   captureReport;
 

@@ -400,13 +400,13 @@ void captureOwnership() {
     assert(dexContains(state.pokedex.shinyCaught,19) == shiny);
     assert(isValidState(state)); roundtrip(state);
 
-    // 가득 찬 파티는 모든 볼을 RNG/수량/반격/보고서 변경 없이 거부한다.
+    // 볼은 사용 가능해도 기본 Party 목적지는 RNG/수량/보고서 변경 없이 거부한다.
     assert(setEncounter(state.encounter,16,0,3,Gender::Male,false) && startBattle(state));
     state.progress.ballTier = 2; state.progress.masterBallCount = 2;
     const auto full = snapshot(state);
     for (auto ball : {CaptureBall::Poke,CaptureBall::Great,CaptureBall::Ultra,CaptureBall::Master}) {
       BattleCaptureReport untouched; untouched.chance = 123;
-      assert(!canUseCaptureBall(state,ball));
+      assert(canUseCaptureBall(state,ball));
       assert(!attemptBattleCapture(state,ball,&untouched));
       assert(snapshot(state) == full && untouched.chance == 123);
     }
