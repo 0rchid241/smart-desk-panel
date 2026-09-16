@@ -14,12 +14,15 @@ using Bytes = std::vector<uint8_t>;
 inline std::map<std::string, std::shared_ptr<Bytes>> files;
 inline std::set<std::string> directories;
 inline bool mounted = false, failMount = false, formatRequested = false;
+inline bool failFormat = false, needsFormat = false;
+inline unsigned formats = 0;
 inline bool failOpen = false, failMkdir = false, failRemove = false, failSeek = false;
 inline bool failReopen = false, corruptFlush = false, truncateClose = false;
 inline size_t writeBudget = std::numeric_limits<size_t>::max();
 inline size_t readBudget = std::numeric_limits<size_t>::max();
 inline void reset() {
   files.clear(); directories.clear(); mounted = failMount = formatRequested = false;
+  failFormat = needsFormat = false; formats = 0;
   failOpen = failMkdir = failRemove = failSeek = failReopen = corruptFlush = truncateClose = false;
   writeBudget = readBudget = std::numeric_limits<size_t>::max();
 }
@@ -77,10 +80,17 @@ class HostLittleFS {
 public:
   bool begin(bool format = false) {
     FakeLittleFS::formatRequested = format;
-    FakeLittleFS::mounted = !FakeLittleFS::failMount;
+    FakeLittleFS::mounted = !FakeLittleFS::failMount && !FakeLittleFS::needsFormat;
     return FakeLittleFS::mounted;
   }
   void end() { FakeLittleFS::mounted = false; }
+  bool format() {
+    ++FakeLittleFS::formats;
+    if (FakeLittleFS::failFormat) return false;
+    FakeLittleFS::files.clear(); FakeLittleFS::directories.clear();
+    FakeLittleFS::needsFormat = false;
+    return true;
+  }
   bool exists(const char* path) {
     return FakeLittleFS::mounted &&
       (FakeLittleFS::files.count(path) != 0 || FakeLittleFS::directories.count(path) != 0);

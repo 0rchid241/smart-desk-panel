@@ -10,9 +10,11 @@
 namespace FakeNvs {
 inline std::map<std::string, std::vector<uint8_t>> data;
 inline bool failOpen = false, failRead = false, partialWrite = false, corruptWrite = false;
+inline bool failReadAfterWrite = false, rejectWrite = false;
 inline unsigned writes = 0;
 inline void reset() {
   data.clear(); failOpen = failRead = partialWrite = corruptWrite = false; writes = 0;
+  failReadAfterWrite = rejectWrite = false;
 }
 }
 class Preferences {
@@ -31,11 +33,13 @@ public:
   }
   size_t putBytes(const char* key, const void* input, size_t length) {
     ++FakeNvs::writes;
+    if (FakeNvs::rejectWrite) return 0;
     const auto* bytes = static_cast<const uint8_t*>(input);
     const size_t written = FakeNvs::partialWrite ? length / 2 : length;
     auto& stored = FakeNvs::data[space + "/" + key];
     stored.assign(bytes, bytes + written);
     if (FakeNvs::corruptWrite && !stored.empty()) stored.back() ^= 1;
+    if (FakeNvs::failReadAfterWrite) FakeNvs::failRead = true;
     return written;
   }
 };

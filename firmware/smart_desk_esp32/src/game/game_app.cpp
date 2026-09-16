@@ -476,9 +476,9 @@ void initGameState() {
       // 이전 버전 상태는 RAM에서 그대로 유지한다.
       // 저장이 성공하면 현재 SAVE_VERSION으로 승격된다.
       saveError =
-        !GameSaveStorage::save(
+        GameSaveStorage::initialize(
           gameSave
-        );
+        ) != GameSaveStorage::CommitResult::Committed;
 
       Serial.println(
         saveError
@@ -495,21 +495,18 @@ void initGameState() {
     PokemonGame::createNewGame();
 
   if (
-    result == LoadResult::Missing ||
-    result == LoadResult::Invalid
+    result == LoadResult::Missing
   ) {
     Serial.println(
-      result == LoadResult::Missing
-        ? "Game: first save"
-        : "Game: invalid save fallback"
+      "Game: first save"
     );
 
     saveError =
-      !GameSaveStorage::save(
+      GameSaveStorage::initialize(
         gameSave
-      );
+      ) != GameSaveStorage::CommitResult::Committed;
   } else {
-    // Storage error / newer save는 기존 bytes를 덮어쓰지 않는다.
+    // 손상된 main/Box pair, I/O 오류, newer save는 기존 bytes를 덮어쓰지 않는다.
     saveError = true;
 
     Serial.println(

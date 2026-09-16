@@ -1,3 +1,4 @@
+#include "storage_test_support.h"
 #include "game_app.h"
 #include "save_storage.h"
 #include "Preferences.h"
@@ -344,7 +345,7 @@ int main() {
     [](
       const GameState& state
     ) {
-      GameSave save;
+      GameSave save; save.boxRoot = wireTestRoot();
       save.state =
         state;
 
@@ -370,7 +371,7 @@ int main() {
       return bytes;
     };
 
-  FakeNvs::reset();
+  resetStorageFakes();
 
   GameApp::init();
   GameApp::drawGameTextScreen();
@@ -2295,6 +2296,33 @@ int main() {
   assert(GameApp::saveState(capturedState)); GameApp::init(); GameApp::drawGameTextScreen();
   assert(stateBytes(GameApp::state()) == capturedBytes);
   std::puts("PASS app C1: atomic ownership/master retry, exactly-once IDs, full-party no-save, animation/reboot ownership");
+
+  // Both NVS roots reference unavailable Box data: fallback display must never
+  // create a replacement save or enable writes over the existing records.
+  const auto protectedNvs = FakeNvs::data;
+  const auto protectedWrites = FakeNvs::writes;
+  const auto protectedFiles = FakeLittleFS::files;
+  FakeLittleFS::files.clear();
+  GameApp::init(); GameApp::drawGameTextScreen();
+  assert(visible("저장 오류") && FakeNvs::data == protectedNvs);
+  assert(!GameApp::saveState(createNewGame()));
+  assert(FakeNvs::writes == protectedWrites && FakeNvs::data == protectedNvs);
+  FakeLittleFS::files = protectedFiles;
+  GameApp::init();
+  assert(stateBytes(GameApp::state()) == capturedBytes);
+
+  const auto beforeUncertain = stateBytes(GameApp::state());
+  auto uncertainCandidate = GameApp::state();
+  ++uncertainCandidate.progress.playTimeSeconds;
+  FakeNvs::failReadAfterWrite = true;
+  assert(!GameApp::saveState(uncertainCandidate));
+  assert(stateBytes(GameApp::state()) == beforeUncertain);
+  const auto uncertainWrites = FakeNvs::writes;
+  FakeNvs::failReadAfterWrite = FakeNvs::failRead = false;
+  assert(!GameApp::saveState(uncertainCandidate) && FakeNvs::writes == uncertainWrites);
+  GameApp::init(); // Readback uncertainty resolved by actual A/B pair load.
+  assert(stateBytes(GameApp::state()) == stateBytes(uncertainCandidate));
+  std::puts("PASS app B2: incomplete pair protects NVS, uncertain commit keeps live state and blocks retry until reload");
 
   const unsigned finalWrites =
     FakeNvs::writes;

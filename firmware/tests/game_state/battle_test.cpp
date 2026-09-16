@@ -1,3 +1,4 @@
+#include "storage_test_support.h"
 #include "battle.h"
 #include "save_data.h"
 #include "save_storage.h"
@@ -103,7 +104,7 @@ void turns() {
   assert(report.actions[1].moveId == 33 && report.actions[0].hit && report.actions[1].hit);
   assert(report.actions[0].damage == 13 - state.battle.opponent.currentHp);
   assert(report.actions[1].damage == 18 - state.battle.player.currentHp);
-  static_assert(SAVE_VERSION == 4 && BATTLE_RECORD_SIZE == 40 && SAVE_MAX_SIZE == 554, "G4 wire format");
+  static_assert(SAVE_VERSION == 5 && BATTLE_RECORD_SIZE == 40 && SAVE_V4_MAX_SIZE == 554 && SAVE_MAX_SIZE == 586, "G4 wire format");
   assert(snapshot(state) == snapshot(repeat));
   assert(state.battle.player.pp[0] == 29 && state.battle.opponent.pp[0] == 34);
   assert(state.battle.player.currentHp < 18 && state.battle.opponent.currentHp < 13);
@@ -254,7 +255,7 @@ void running() {
   assert(snapshot(invalid) == invalidBefore);
   assert(untouched.escaped && untouched.opponentActed);
 
-  static_assert(SAVE_VERSION == 4 && BATTLE_RECORD_SIZE == 40, "G5-A2 keeps v4 save layout");
+  static_assert(SAVE_VERSION == 5 && BATTLE_RECORD_SIZE == 40, "G5-A2 keeps v4 save layout");
 }
 
 void capturing() {
@@ -355,14 +356,14 @@ void capturing() {
   assert(snapshot(noBattle) == noBattleBefore);
 
   static_assert(
-    SAVE_VERSION == 4 &&
+    SAVE_VERSION == 5 &&
     BATTLE_RECORD_SIZE == 40,
     "G5-B keeps v4 save layout"
   );
 }
 
 void captureOwnership() {
-  static_assert(SAVE_VERSION == 4 && POKEMON_RECORD_SIZE == 24 &&
+  static_assert(SAVE_VERSION == 5 && POKEMON_RECORD_SIZE == 24 &&
     BATTLE_RECORD_SIZE == 40 && PARTY_CAPACITY == 3, "C1 keeps v4 layout");
   for (bool shiny : {false, true}) {
     auto state = active(19, 7);
@@ -431,7 +432,7 @@ void validationAndMigration() {
   const auto bytes = snapshot(state);
   for (const size_t offset : {size_t(0),size_t(1),size_t(5),size_t(6),size_t(8),size_t(9),size_t(10),
        size_t(11),size_t(12),size_t(20),size_t(22),size_t(24),size_t(26),size_t(28),size_t(36)}) {
-    auto bad = bytes; const size_t pos = bytes.size() - BATTLE_RECORD_SIZE;
+    auto bad = bytes; const size_t pos = bytes.size() - BOX_ROOT_RECORD_SIZE - BATTLE_RECORD_SIZE;
     bad[pos + offset] = 255;
     if (offset == 36) for (size_t i = 0; i < 4; ++i) bad[pos+36+i] = 0;
     updateCrc(bad);
@@ -461,17 +462,17 @@ void validationAndMigration() {
   const uint32_t length = static_cast<uint32_t>(v3.size()-SAVE_HEADER_SIZE);
   for (unsigned i=0;i<4;++i) v3[10+i]=static_cast<uint8_t>(length>>(8*i));
   updateCrc(v3);
-  FakeNvs::reset(); FakeNvs::data["pokemon_g1/save_a"] = v3;
+  resetStorageFakes(); FakeNvs::data["pokemon_g1/save_a"] = v3;
   GameSave loaded;
   assert(GameSaveStorage::load(loaded) == GameSaveStorage::LoadResult::Loaded && loaded.saveVersion == 3);
   assert(loaded.state.battle.status == BattleStatus::None);
   loaded.saveVersion = SAVE_VERSION;
   assert(encode(loaded) == encode(old));
   loaded.saveVersion = 3;
-  FakeNvs::partialWrite = true; assert(!GameSaveStorage::save(loaded));
+  FakeNvs::partialWrite = true; assert(!initializeSave(loaded));
   assert(loaded.saveVersion == 3 && FakeNvs::data.at("pokemon_g1/save_a") == v3);
-  FakeNvs::partialWrite = false; assert(GameSaveStorage::save(loaded));
-  assert(loaded.saveVersion == 4 && loaded.sequence == 83);
+  FakeNvs::partialWrite = false; assert(initializeSave(loaded));
+  assert(loaded.saveVersion == 5 && loaded.sequence == 83);
   GameSave reboot;
   assert(GameSaveStorage::load(reboot) == GameSaveStorage::LoadResult::Loaded);
   assert(encode(loaded) == encode(reboot));

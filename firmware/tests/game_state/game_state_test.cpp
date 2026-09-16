@@ -1,3 +1,4 @@
+#include "storage_test_support.h"
 #include "game_state.h"
 #include "save_data.h"
 #include "save_storage.h"
@@ -13,7 +14,10 @@ using GameSaveStorage::LoadResult;
 std::vector<uint8_t> encode(const GameSave& save) {
   std::vector<uint8_t> bytes(SAVE_MAX_SIZE);
   size_t size = 0;
-  assert(serialize(save, bytes.data(), bytes.size(), size));
+  auto current = save;
+  current.saveVersion = SAVE_VERSION;
+  if (!current.boxRoot.storeId) current.boxRoot = wireTestRoot();
+  assert(serialize(current, bytes.data(), bytes.size(), size));
   bytes.resize(size);
   return bytes;
 }
@@ -110,13 +114,13 @@ void codecTests() {
 }
 
 void storageTests() {
-  FakeNvs::reset();
+  resetStorageFakes();
   FakeNvs::data["schedule/existing"] = {1, 2, 3};
   FakeNvs::data["calcache/json"] = {4, 5, 6};
   GameSave save;
   assert(GameSaveStorage::load(save) == LoadResult::Missing);
   save.state = createNewGame();
-  assert(GameSaveStorage::save(save) && save.sequence == 1);
+  assert(initializeSave(save) && save.sequence == 1);
   const auto first = FakeNvs::data.at("pokemon_g1/save_a");
   save.state.party.members[0].exp = 123;
   save.state.party.members[0].friendship = 88;
@@ -143,9 +147,13 @@ void storageTests() {
   FakeNvs::data["pokemon_g1/save_a"].back() ^= 1;
   assert(GameSaveStorage::load(rebooted) == LoadResult::Loaded && rebooted.sequence == 2);
   FakeNvs::data["pokemon_g1/save_b"].back() ^= 1;
-  assert(GameSaveStorage::load(rebooted) == LoadResult::Invalid);
-  rebooted = GameSave{}; rebooted.state = createNewGame();
-  assert(GameSaveStorage::save(rebooted));
+  assert(GameSaveStorage::load(rebooted) == LoadResult::RecoveryRequired);
+  const auto corruptBoth = FakeNvs::data;
+  assert(!initializeSave(rebooted) && !GameSaveStorage::save(rebooted));
+  assert(FakeNvs::data == corruptBoth);
+  // Restore the known good backup for the remaining independent error cases.
+  FakeNvs::data["pokemon_g1/save_a"] = first;
+  FakeNvs::data.erase("pokemon_g1/save_b");
   assert(GameSaveStorage::load(rebooted) == LoadResult::Loaded);
 
   auto future = encode(rebooted); future[4] = SAVE_VERSION + 1; updateCrc(future);
@@ -265,7 +273,7 @@ void explorationTests() {
   // Correct CRC does not bypass exploration field validation.
   for (size_t offset : {size_t(0), size_t(1), size_t(3), size_t(11)}) {
     auto invalid = bytes;
-    const size_t position = bytes.size() - BATTLE_RECORD_SIZE - ENCOUNTER_RECORD_SIZE - EXPLORATION_RECORD_SIZE;
+    const size_t position = bytes.size() - BOX_ROOT_RECORD_SIZE - BATTLE_RECORD_SIZE - ENCOUNTER_RECORD_SIZE - EXPLORATION_RECORD_SIZE;
     if (offset == 0) invalid[position] = 9;
     if (offset == 1) invalid[position + 1] = 2;
     if (offset == 3) for (size_t i = 0; i < 8; ++i) invalid[position + 3 + i] = 0;
@@ -326,7 +334,7 @@ void encounterTests() {
 
   // CRC가 정상이어도 의미적으로 잘못된 Encounter는 거부
   const size_t position =
-    bytes.size() - BATTLE_RECORD_SIZE - ENCOUNTER_RECORD_SIZE;
+    bytes.size() - BOX_ROOT_RECORD_SIZE - BATTLE_RECORD_SIZE - ENCOUNTER_RECORD_SIZE;
 
   for (int test = 0; test < 5; ++test) {
     auto invalid = bytes;
@@ -450,7 +458,7 @@ void encounterTests() {
 }
 
 void migrationTests() {
-  FakeNvs::reset();
+  resetStorageFakes();
   GameSave original; original.state = createNewGame(); original.sequence = 41;
   original.state.party.count = 3;
   for (uint8_t i = 0; i < 3; ++i) {
@@ -475,11 +483,11 @@ void migrationTests() {
   auto migrated = loaded; migrated.saveVersion = SAVE_VERSION;
   assert(encode(migrated) == encode(original)); // All former fields, not just the partner.
   FakeNvs::partialWrite = true;
-  assert(!GameSaveStorage::save(loaded) && loaded.saveVersion == 1 && loaded.sequence == 41);
+  assert(!initializeSave(loaded) && loaded.saveVersion == 1 && loaded.sequence == 41);
   assert(FakeNvs::data.at("pokemon_g1/save_a") == g1);
   FakeNvs::partialWrite = false;
   assert(GameSaveStorage::load(loaded) == LoadResult::Loaded && loaded.saveVersion == 1);
-  assert(GameSaveStorage::save(loaded) && loaded.saveVersion == SAVE_VERSION && loaded.sequence == 42);
+  assert(initializeSave(loaded) && loaded.saveVersion == SAVE_VERSION && loaded.sequence == 42);
   assert(FakeNvs::data.at("pokemon_g1/save_a") == g1);
   assert(GameSaveStorage::load(migrated) == LoadResult::Loaded && migrated.saveVersion == SAVE_VERSION);
   assert(encode(loaded) == encode(migrated));
@@ -494,7 +502,7 @@ void migrationTests() {
 }
 
 void v2MigrationTests() {
-  FakeNvs::reset();
+  resetStorageFakes();
   GameSave original;
   original.state = createNewGame();
 
@@ -522,7 +530,7 @@ void v2MigrationTests() {
   assert(loaded.state.encounter.status == EncounterStatus::None);
   assert(isValidEncounter(loaded.state.encounter));
   // 저장하면 v3로 안전하게 이전
-  assert(GameSaveStorage::save(loaded));
+  assert(initializeSave(loaded));
   assert(loaded.saveVersion == SAVE_VERSION);
   assert(loaded.sequence == 71);
   // 재부팅을 가정해 다시 읽기
@@ -538,8 +546,10 @@ void v2MigrationTests() {
 
 void battleTests();
 void saveWireTests();
+void savePairTests();
 int main() {
   saveWireTests();
+  savePairTests();
   battleTests();
   codecTests();
   storageTests();

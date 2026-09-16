@@ -1,3 +1,4 @@
+#include "storage_test_support.h"
 #include "game_app.h"
 #include "save_storage.h"
 #include "Preferences.h"
@@ -120,7 +121,7 @@ void drawScrollingUtf8Text(
 int main() {
   using namespace PokemonGame;
 
-  FakeNvs::reset();
+  resetStorageFakes();
 
   GameApp::init();
 

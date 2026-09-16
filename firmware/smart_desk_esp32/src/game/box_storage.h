@@ -14,6 +14,9 @@ enum class Result { Ok, NotMounted, Missing, Collision, Invalid, IoError,
 constexpr size_t PATH_SIZE = 52;
 bool snapshotPath(BoxKey key, char* output, size_t capacity);
 Result mount(); // Never formats on failure.
+// Destructive: only the main-save coordinator may authorize first-use initialization.
+// Never call for a v5/future/unknown NVS record. mount() itself never formats.
+Result initializeFilesystem();
 void unmount(); // Close all Snapshot readers first.
 Result exists(BoxKey key, bool& output);
 Result removeSnapshot(BoxKey key); // Explicit only. Caller must protect referenced roots.

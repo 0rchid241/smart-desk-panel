@@ -31,6 +31,11 @@ Result mount() {
   return mounted ? Result::Ok : Result::IoError;
 }
 void unmount() { LittleFS.end(); mounted = false; }
+Result initializeFilesystem() {
+  unmount();
+  if (!LittleFS.format()) return Result::IoError;
+  return mount();
+}
 Result exists(BoxKey key, bool& output) {
   if (!mounted) return Result::NotMounted;
   char path[PATH_SIZE];

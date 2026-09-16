@@ -548,3 +548,101 @@ truncation/trailing bytes, 부분 쓰기/flush 손상/close 절단/reopen 실패
 다음 단계는 v5 BoxRoot, 기존 저장의 migration/초기 filesystem 정책, main+Box 복구/commit
 coordinator입니다. B1의 key/metadata/mutation API를 연결하되 NVS A/B 양쪽 root 보호와
 Party+Box ID 정합성을 그 단계에서 추가해야 합니다.
+
+## G5-C2-B2 — v5 main + BoxRoot 저장 쌍
+
+B1 Box format/capacity/24-byte codec은 유지합니다. Box UI, 포획→Box, Party full 제한,
+전투 계산은 변경하지 않습니다. SAVE_VERSION=5이고 GameState 바깥 GameSave에 BoxRoot를 둡니다.
+
+### v5 wire
+
+기존 v4 payload(Battle까지) 뒤에 32 bytes를 append합니다.
+`SAVE_V4_MAX_SIZE=554`, `BOX_ROOT_RECORD_SIZE=32`, `SAVE_MAX_SIZE=586`.
+기존 18-byte PKDG header/CRC 규칙은 유지하며 새 root도 CRC에 포함합니다.
+v1/v2/v3/v4/v5는 명시적으로 decode하고 legacy의 root는 모두 0으로 남깁니다.
+
+| root offset | bytes | field |
+| --- | ---: | --- |
+| 0 | 8 | storeId (nonzero) |
+| 8 | 8 | generation (nonzero) |
+| 16 | 4 | capacity=2048 |
+| 20 | 4 | occupiedCount<=2048 |
+| 24 | 4 | snapshotCrc32 (0 포함 전체 uint32 허용) |
+| 28 | 2 | boxFormatVersion=1 |
+| 30 | 2 | flags=0 |
+
+### load / recovery / global validation
+
+`GameSaveStorage::load`는 NVS pokemon_g1의 save_a/save_b를 독립적으로 읽습니다.
+키 존재/내용 판독은 NVS의 nvs_get_blob 오류 코드를 직접 확인합니다. Preferences의 false/0 반환만으로
+I/O 오류를 Missing으로 오인하지 않기 위한 읽기 경계 보완이며, 쓰기는 기존 Preferences를 사용합니다.
+v5는 main CRC/의미 검증 후 B1 Snapshot::open으로 root의 파일을 전체 검증하고
+key/count/CRC를 대조합니다. bitmap을 순회해 Party/Box ID 중복, nextInstanceId 상한,
+seen/caught, shiny 개체의 shinyCaught도 검사합니다. 일반 개체의 과거 shinyCaught는 허용합니다.
+전체 Box 개체 배열은 만들지 않습니다.
+
+완전한 후보 중 높은 main sequence를 선택합니다. 최신 파일이 missing/corrupt이면 이전 쌍으로
+복구합니다. NVS/파일 I/O 오류 또는 future version은 쓰기 불가로 처리합니다.
+v5 흔적이 있으나 완전한 쌍이 없으면 RecoveryRequired이며, 식별 불가 손상도 Invalid로 보존합니다.
+GameApp은 Missing만 새 게임으로 초기화합니다. 나머지 오류는 RAM fallback과 기존 저장 오류 표시를
+사용하며 새 save로 덮어쓰지 않습니다.
+
+### 명시적인 initialize / migration
+
+GameApp 초기 로드에서 legacy이면 `initialize`, Missing이면 새 GameState로 `initialize`합니다.
+이 함수만 빈 Box 생성 및 최초 filesystem 초기화를 수행합니다. 일반 save는 초기화하지 않습니다.
+
+1. generic BoxStorage::mount는 여전히 LittleFS.begin(false).
+2. mount가 실패했을 때만 별도 initializeFilesystem(format→mount)을 검토합니다.
+3. load에서 진짜 Missing 또는 legacy가 선택되었고 양쪽 슬롯 어디에도 modern/future/식별 불가
+   데이터가 없다고 확인한 경우만 format을 허용합니다. v5 쓰기를 한 번이라도 시도하면 이 실행에서는
+   다시 format하지 않습니다.
+4. esp_random 두 번으로 nonzero uint64 storeId 생성. zero/파일 충돌은 최대 8회 재시도합니다.
+5. generation=1 empty snapshot 작성·재오픈 검증 후 metadata에서 BoxRoot를 구성합니다.
+6. 모든 기존 GameState 필드는 그대로 복사하고 비활성 NVS 슬롯에 v5/sequence+1을 commit합니다.
+7. 확인된 성공만 호출자의 GameSave를 승격합니다. 실패/불확정 orphan은 삭제하지 않습니다.
+
+### commit 결과와 API
+
+- `validatePair(save)`: main+Box/global 검증, storage 변경 없음 (필요 시 비파괴 mount).
+- `initialize(save)`: 명시적인 최초 설치/legacy migration. 이미 commit된 동일 v5는 추가 쓰기 없음.
+- `saveDetailed(save)`: Committed / NotCommitted / Indeterminate.
+- `save(save)`: 기존 bool wrapper. Committed만 true.
+
+일반 v5 save는 이미 존재하는 Box를 검증한 뒤 NVS만 씁니다. snapshot 생성/복사/삭제가 없고
+Box generation은 유지됩니다. 향후 준비된 새 root를 candidate에 넣는 연결점도 같은 saveDetailed입니다.
+
+write 반환값만으로 성공/실패를 단정하지 않습니다. 대상 NVS를 재판독하고 candidate와 바이트 비교 및
+pair 검증 후 Committed를 반환합니다. 대상이 commit되지 않았고 기존 active 쌍이 유지됨을 확인하면
+NotCommitted입니다. readback I/O 오류 또는 기존 상태 보존을 확인할 수 없으면 Indeterminate입니다.
+Indeterminate는 live/activeSlot/sequence를 진행시키지 않고 이후 모든 쓰기를 잠급니다.
+재부팅 또는 load가 실제 A/B를 다시 판정할 때만 해제됩니다. 자동 cleanup은 없습니다.
+
+### host 검증
+
+동일 run.ps1에서 기존 코어/전투/C1 포획/파티 viewer/애셋/fallback 앱/B1 Box 회귀를 유지합니다.
+v4 golden 554 bytes는 수정하지 않았으며, 정상 decode와 모든 게임 필드 보존을 검사합니다.
+v5에서 root를 제외하고 legacy header/CRC를 복원한 결과도 golden과 전부 일치합니다.
+추가 save_pair_test는 v4 golden/배틀 HP·PP·turn·RNG/탐험·조우 이전, 최초 포맷 제한,
+key 충돌, 최신 쌍 손상 rollback, 양쪽 불완전, global ID/도감, 부분 write와 write 후 read 오류,
+불확정 재시도 차단/재부팅 복원, 일반 save의 Box 불변을 검사합니다.
+GameApp 테스트도 불완전 쌍이 NVS를 덮어쓰지 않는지와 불확정 시 live 상태 보존을 검증합니다.
+
+실기 업로드/포맷은 이번 작업에서 실행하지 않습니다. 이후 v4→v5 전환 후 상태 보존, 재부팅,
+전원 차단 복구, mount 실패 시 비파괴 동작, Wi-Fi 사용 중 heap/저장 지연을 확인해야 합니다.
+다음 G5-C2-C는 B1 mutate로 준비한 snapshot의 metadata→BoxRoot를 포획 candidate와 묶어
+saveDetailed에 전달하는 연결입니다. 포획 성공 시 Box 사용과 UI 안내는 아직 구현하지 않았습니다.
+
+B2 최종 검증: 위 run.ps1 전체 PASS (MSVC /W4 /WX), git diff --check PASS.
+ESP32 core 3.3.11 / ESP32 Dev Module / PartitionScheme=huge_app 전체 compile/link PASS.
+
+| B2 최종 빌드 | Flash | 전역 RAM |
+| --- | ---: | ---: |
+| 로컬 애셋 포함 | 1,516,976 bytes (48%) | 52,408 bytes (15%) |
+| 애셋 없는 fallback | 1,514,092 bytes (48%) | 52,400 bytes (15%) |
+
+Arduino CLI는 기존 B1 build cache 경로(build/firmware-g5-c2-b1 및
+build/firmware-g5-c2-b1-fallback)를 재사용했으며, 최종 산출물은 B2 소스입니다.
+fallback은 build/b1-fallback-source/smart_desk_esp32에 local_game_assets를 제외해 복사했고,
+게임 .h/.cpp 파일의 hash 일치를 확인했습니다. 이 RAM 수치는 전역 변수만이며 실행 중 heap/stack
+최대 사용량은 실기 측정 대상입니다. 실제 업로드/format/commit/push는 수행하지 않았습니다.
