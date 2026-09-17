@@ -222,6 +222,7 @@ ButtonEvent readButtonEvent(bool allowLong) {
       !rightDown
     ) {
 
+      const bool shortChord = !chordTriggered;
       chordActive =
         false;
 
@@ -233,6 +234,9 @@ ButtonEvent readButtonEvent(bool allowLong) {
 
       rightPending =
         false;
+
+      // Emit once, only after both releases; a mode switch consumes BACK.
+      return shortChord ? BUTTON_BACK : BUTTON_NONE;
     }
 
     return

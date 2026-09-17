@@ -3,6 +3,7 @@
 #include "save_storage.h"
 #include "capture_storage.h"
 #include "box_browser.h"
+#include "box_details.h"
 #include "../hardware/displays.h"
 #include "../core/app_config.h"
 #include "../services/network_time.h"
@@ -147,11 +148,13 @@ const char* regionMessage = nullptr;
 // update()는 DESK 모드에서도 실행되므로 직접 OLED를 그리지 않고 dirty만 세운다.
 bool graphicsDirty = true;
 
-enum class BoxScreen { Menu, Search, Generations, Number, NumberError, List, Detail, Empty, NoResults, Error };
+enum class BoxScreen { Menu, Search, Generations, Number, NumberError, List, PokemonMenu, Stats, Moves, Empty, NoResults, Error };
 BoxBrowser::Browser boxBrowser;
 BoxScreen boxScreen = BoxScreen::Menu, boxReturn = BoxScreen::Menu;
 uint16_t boxChoice = 0, boxTop = 0, boxSelected = 0, boxListTop = 0;
 uint8_t boxDigits[4] = {}, boxDigit = 0;
+uint16_t boxPokemonChoice = 0;
+uint8_t boxInfoPage = 0;
 char boxViewTitle[32] = {};
 PokemonGame::PokemonInstance boxPokemon;
 
@@ -186,6 +189,38 @@ uint16_t boxWrap(uint16_t value, int delta, uint16_t count) {
 }
 void handleBoxButton(ButtonEvent button) {
   using BoxBrowser::View;
+  if (button == BUTTON_BACK) {
+    switch (boxScreen) {
+      case BoxScreen::Stats: case BoxScreen::Moves: boxScreen = BoxScreen::PokemonMenu; break;
+      case BoxScreen::PokemonMenu: boxScreen = BoxScreen::List; break;
+      case BoxScreen::List: case BoxScreen::Search: boxMenu(BoxScreen::Menu); break;
+      case BoxScreen::Number: case BoxScreen::NumberError: case BoxScreen::Generations:
+        boxMenu(BoxScreen::Search); break;
+      case BoxScreen::NoResults: boxMenu(boxReturn); break;
+      case BoxScreen::Menu: case BoxScreen::Empty: closeBox(); break;
+      case BoxScreen::Error: break;
+    }
+    graphicsDirty = true;
+    return;
+  }
+  if (boxScreen == BoxScreen::PokemonMenu) {
+    if (button == BUTTON_LEFT || button == BUTTON_RIGHT)
+      boxPokemonChoice = boxWrap(boxPokemonChoice, button == BUTTON_LEFT ? -1 : 1, 3);
+    else if (button == BUTTON_OK) {
+      boxScreen = boxPokemonChoice == 0 ? BoxScreen::Stats :
+        boxPokemonChoice == 1 ? BoxScreen::Moves : BoxScreen::List;
+      boxInfoPage = 0;
+    }
+    return;
+  }
+  if (boxScreen == BoxScreen::Stats || boxScreen == BoxScreen::Moves) {
+    if (button == BUTTON_OK) boxScreen = BoxScreen::PokemonMenu;
+    else if (button == BUTTON_LEFT || button == BUTTON_RIGHT) {
+      const uint16_t pages = boxScreen == BoxScreen::Stats ? 2 : BoxDetails::movePages(boxPokemon);
+      boxInfoPage = static_cast<uint8_t>(boxWrap(boxInfoPage, button == BUTTON_LEFT ? -1 : 1, pages));
+    }
+    return;
+  }
   const int step = button == BUTTON_LEFT ? -1 : button == BUTTON_RIGHT ? 1 :
     button == BUTTON_LEFT_LONG ? -10 : button == BUTTON_RIGHT_LONG ? 10 : 0;
   if (boxScreen == BoxScreen::Error || boxScreen == BoxScreen::Empty) {
@@ -211,19 +246,18 @@ void handleBoxButton(ButtonEvent button) {
         }
       }
     }
-  } else if (boxScreen == BoxScreen::List || boxScreen == BoxScreen::Detail) {
+  } else if (boxScreen == BoxScreen::List) {
     const uint16_t count = boxBrowser.index().count();
     if (step) {
       // Short navigation includes the back action. Fast jumps count Pokemon only,
-      // just like details, so +/-10 never spends a step on a menu action.
+      // so +/-10 never spends a step on a menu action.
       const bool fast = button == BUTTON_LEFT_LONG || button == BUTTON_RIGHT_LONG;
       if (fast && boxSelected == count) boxSelected = step > 0 ? count - 1 : 0;
-      boxSelected = boxWrap(boxSelected, step, count + (boxScreen == BoxScreen::List && !fast ? 1 : 0));
+      boxSelected = boxWrap(boxSelected, step, count + (!fast ? 1 : 0));
       keepVisible(boxSelected, boxListTop, 3); boxReadSelection();
     } else if (button == BUTTON_OK) {
-      if (boxScreen == BoxScreen::Detail) boxScreen = BoxScreen::List;
-      else if (boxSelected == count) boxMenu(boxReturn);
-      else boxScreen = BoxScreen::Detail;
+      if (boxSelected == count) boxMenu(boxReturn);
+      else { boxScreen = BoxScreen::PokemonMenu; boxPokemonChoice = 0; boxInfoPage = 0; }
       graphicsDirty = true;
     }
   } else {
@@ -285,17 +319,36 @@ void drawBoxText(Adafruit_SSD1306& oled) {
       if (index == boxSelected) drawScrollingUtf8Text(oled, 12, y, 116, name);
       else drawUtf8TextLineClipped(oled, 12, y, 116, name);
     }
-  } else if (boxScreen == BoxScreen::Detail) {
+  } else if (boxScreen == BoxScreen::PokemonMenu) {
     drawScrollingUtf8Text(oled, 0, 0, 128, boxName(boxPokemon.speciesId, nameBuffer, sizeof(nameBuffer)));
-    std::snprintf(line, sizeof(line), "#%03u Lv.%u %s", static_cast<unsigned>(boxPokemon.speciesId),
-      static_cast<unsigned>(boxPokemon.level), boxGender());
-    oled.setCursor(0, 20); oled.print(line);
+    const char* items[] = {"능력치", "기술", "돌아가기"};
+    for (uint16_t i = 0; i < 3; ++i) {
+      const int16_t y = static_cast<int16_t>(16 + i * 16);
+      oled.setCursor(0, y + 4); oled.print(i == boxPokemonChoice ? ">" : " ");
+      drawUtf8Text(oled, 12, y, items[i]);
+    }
+  } else if (boxScreen == BoxScreen::Stats) {
+    // Identity remains on OLED1; values are derived from the cached selected instance.
+    std::snprintf(line, sizeof(line), "능력치 %u/2", static_cast<unsigned>(boxInfoPage + 1));
+    drawUtf8Text(oled, 0, 0, line);
     const auto stats = PokemonGame::calculateStats(boxPokemon);
-    if (stats.hp) std::snprintf(line, sizeof(line), "HP %u/%u", static_cast<unsigned>(boxPokemon.currentHp), static_cast<unsigned>(stats.hp));
-    else std::snprintf(line, sizeof(line), "HP %u/?", static_cast<unsigned>(boxPokemon.currentHp));
-    oled.setCursor(0, 34); oled.print(line);
-    std::snprintf(line, sizeof(line), "ID %lu", static_cast<unsigned long>(boxPokemon.instanceId));
-    oled.setCursor(0, 48); oled.print(line);
+    const char* labels[] = {"HP", "공격", "방어", "특공", "특방", "스피드"};
+    const uint16_t values[] = {stats.hp, stats.attack, stats.defense, stats.spAttack, stats.spDefense, stats.speed};
+    for (uint8_t row = 0; row < 3; ++row) {
+      const uint8_t i = static_cast<uint8_t>(boxInfoPage * 3 + row);
+      if (!i) std::snprintf(line, sizeof(line), "HP %u/%u", static_cast<unsigned>(boxPokemon.currentHp), static_cast<unsigned>(stats.hp));
+      else std::snprintf(line, sizeof(line), "%s %u", labels[i], static_cast<unsigned>(values[i]));
+      drawUtf8Text(oled, 0, static_cast<int16_t>(16 + row * 16), line);
+    }
+  } else if (boxScreen == BoxScreen::Moves) {
+    std::snprintf(line, sizeof(line), "기술 %u/%u", static_cast<unsigned>(boxInfoPage + 1),
+      static_cast<unsigned>(BoxDetails::movePages(boxPokemon)));
+    drawUtf8Text(oled, 0, 0, line);
+    if (!BoxDetails::moveCount(boxPokemon)) drawUtf8Text(oled, 0, 24, "기술 없음");
+    for (uint8_t row = 0; row < 2; ++row) {
+      const char* name = BoxDetails::moveName(boxPokemon, static_cast<uint8_t>(boxInfoPage * 2 + row));
+      if (name) drawUtf8TextLineClipped(oled, 0, static_cast<int16_t>(24 + row * 20), 128, name);
+    }
   } else if (boxScreen == BoxScreen::Number) {
     drawUtf8Text(oled, 0, 0, "도감번호 찾기");
     oled.setTextSize(2);
@@ -874,7 +927,8 @@ const uint8_t* localWildSprite(
 
 void drawBoxGraphic(Adafruit_SSD1306& oled) {
   oled.clearDisplay(); oled.setTextColor(SSD1306_WHITE); oled.setTextSize(1);
-  if (!boxPokemon.instanceId || (boxScreen != BoxScreen::List && boxScreen != BoxScreen::Detail)) {
+  if (!boxPokemon.instanceId || (boxScreen != BoxScreen::List && boxScreen != BoxScreen::PokemonMenu &&
+       boxScreen != BoxScreen::Stats && boxScreen != BoxScreen::Moves)) {
     drawUtf8Text(oled, 12, 24, "포켓몬 박스"); oled.display(); return;
   }
   bool drawn = false;
@@ -886,15 +940,16 @@ void drawBoxGraphic(Adafruit_SSD1306& oled) {
   }
 #endif
   if (!drawn) { oled.setTextSize(3); oled.setCursor(16, 24); oled.print("?"); oled.setTextSize(1); }
-  char line[24];
+  char line[24], nameBuffer[16];
+  drawScrollingUtf8Text(oled, 0, 0, 128, boxName(boxPokemon.speciesId, nameBuffer, sizeof(nameBuffer)));
   std::snprintf(line, sizeof(line), "#%03u", static_cast<unsigned>(boxPokemon.speciesId));
-  oled.setCursor(58, 0); oled.print(line);
-  std::snprintf(line, sizeof(line), "Lv.%u %s", static_cast<unsigned>(boxPokemon.level), boxGender());
   oled.setCursor(58, 16); oled.print(line);
-  if (boxPokemon.shiny) { oled.setCursor(58, 32); oled.print("SHINY"); }
+  std::snprintf(line, sizeof(line), "Lv.%u %s", static_cast<unsigned>(boxPokemon.level), boxGender());
+  oled.setCursor(58, 32); oled.print(line);
+  if (boxPokemon.shiny) { oled.setCursor(58, 48); oled.print("SHINY"); }
   if (boxPokemon.formId) {
-    std::snprintf(line, sizeof(line), "FORM %u", static_cast<unsigned>(boxPokemon.formId));
-    oled.setCursor(58, 48); oled.print(line);
+    std::snprintf(line, sizeof(line), boxPokemon.shiny ? "F%u" : "FORM %u", static_cast<unsigned>(boxPokemon.formId));
+    oled.setCursor(boxPokemon.shiny ? 94 : 58, 48); oled.print(line);
   }
   oled.display();
 }
@@ -3266,6 +3321,19 @@ void handleButton(
 ) {
   if (screen == GameScreen::Box) {
     handleBoxButton(button); drawGameTextScreen();
+    if (graphicsDirty) drawGameGraphics();
+    return;
+  }
+  if (button == BUTTON_BACK) {
+    // Explicit allowlist: transients, results and recovery screens cannot be cancelled.
+    if (screen == GameScreen::Status || screen == GameScreen::Party || screen == GameScreen::RegionSelect) {
+      screen = GameScreen::Home; graphicsDirty = true;
+    } else if (screen == GameScreen::Battle && !showingBattleAction() &&
+        gameSave.state.battle.status == PokemonGame::BattleStatus::Active &&
+        (battleUiMode == BattleUiMode::MoveSelection || battleUiMode == BattleUiMode::BallSelection)) {
+      resetBattleCommandUi();
+    }
+    drawGameTextScreen();
     if (graphicsDirty) drawGameGraphics();
     return;
   }

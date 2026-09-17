@@ -240,6 +240,25 @@ void assertCommandScreen() {
   );
 }
 
+std::vector<uint8_t> currentStateBytes() {
+  PokemonGame::GameSave snapshot;
+  // Serialize RAM state with a valid test root; do not call load/recovery during UI tests.
+  snapshot.boxRoot=wireTestRoot();
+  snapshot.state=GameApp::state();
+  return browserSaveBytes(snapshot);
+}
+
+void checkBattleBack(bool bag) {
+  const auto before=currentStateBytes(); const auto nvs=FakeNvs::data;
+  const auto files=browserFiles(); const auto writes=FakeNvs::writes;
+  GameApp::handleButton(BUTTON_BACK); assertCommandScreen();
+  GameApp::handleButton(BUTTON_BACK); assertCommandScreen();
+  assert(currentStateBytes()==before && nvs==FakeNvs::data && files==browserFiles());
+  assert(writes==FakeNvs::writes);
+  if (bag) GameApp::handleButton(BUTTON_RIGHT);
+  GameApp::handleButton(BUTTON_OK);
+}
+
 void enterFight() {
   assertCommandScreen();
 
@@ -252,6 +271,8 @@ void enterFight() {
       "기술 선택"
     )
   );
+  checkBattleBack(false);
+
 }
 
 void enterBag() {
@@ -270,9 +291,14 @@ void enterBag() {
       "볼 선택"
     )
   );
+  checkBattleBack(true);
+
 }
 
 void finishFeedback() {
+  const auto beforeBack=currentStateBytes(); const auto textBefore=gameOled.text;
+  GameApp::handleButton(BUTTON_BACK);
+  assert(currentStateBytes()==beforeBack && gameOled.text==textBefore);
   const auto writes =
     FakeNvs::writes;
 
@@ -313,6 +339,9 @@ void finishCaptureAnimation(
     )
   );
 
+  const auto beforeBack=currentStateBytes(); const auto textBefore=gameOled.text;
+  GameApp::handleButton(BUTTON_BACK);
+  assert(currentStateBytes()==beforeBack && gameOled.text==textBefore);
   const unsigned writes =
     FakeNvs::writes;
 

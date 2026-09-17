@@ -783,8 +783,9 @@ OLED2 목록은 header(선택 번호/결과 수) + 최대 3행입니다. 커서�
 스크롤하며 선택 행만 기존 UTF-8 scrolling helper를 사용합니다. 다른 행은 영역 내 clipping을
 사용합니다. 마지막에는 별도 돌아가기 행이 있고 결과 수에는 포함하지 않습니다. 짧은 L/R은
 이 행을 포함해 wrap합니다. 긴 L/R은 이 행을 건너뛰고 실제 개체 수 기준 ±10 wrap합니다.
-목록 OK는 상세, 상세 OK는 선택 위치를 유지한 목록 복귀입니다. 상세에서도 ±1/±10 wrap합니다.
-상세는 이름, #번호/Lv/성별, 실제 HP/최대 HP, instanceId를 표시합니다.
+D.1부터 목록 OK는 개체 메뉴(능력치 / 기술 / 돌아가기)입니다. 돌아가기 또는 BACK으로
+목록 선택 위치를 유지합니다. ±1/±10 개체 이동은 목록에서만 합니다. instanceId는 내부
+식별자로 저장·정렬·검증에 유지하며 플레이어 UI에는 표시하지 않습니다.
 OLED1은 선택 개체의 기존 48x48 local wild sprite와 #번호/Lv/성별/SHINY/폼을 표시합니다.
 애셋 또는 해당 sprite가 없으면 '?' fallback이며 새 asset은 없습니다.
 
@@ -837,3 +838,49 @@ LittleFS subtype 0x83, NVS offset/size와 MD5를 확인했습니다. 기존 'spi
 짧게 ±1/길게 ±10(빠른 이동은 돌아가기 행 제외), 상세 복귀 위치, 750ms 단독 long과 1초 chord,
 Box 중 DESK 전환→GAME Home 복귀→재진입, 재부팅 후 동일 개체, 애셋/fallback 배치를 확인합니다.
 특히 full Box 진입 지연과 Wi-Fi/알림 사용 중 heap/stack 여유는 실제 보드에서 측정해야 합니다.
+
+## G5-C2-D.1: Box 조회와 공통 BACK
+
+- OLED1: 선택 개체 이름, #전국도감 번호, Lv/성별, SHINY/폼, 기존 sprite 또는 `?` fallback.
+- 개체 메뉴: **능력치 / 기술 / 돌아가기**. 파티 이동·방생은 후속 E이며 가짜 메뉴는 없습니다.
+- 능력치: 기존 `calculateStats()` 결과를 2페이지로 표시합니다. 1페이지 HP/공격/방어,
+  2페이지 특공/특방/스피드. LEFT/RIGHT 페이지 전환, OK/BACK 개체 메뉴 복귀입니다.
+- 기술: `moves[4]`의 0 슬롯을 제외하고 기존 lookup 이름을 2개씩 표시합니다. 0개는
+  `기술 없음`, 미등록 ID는 `?`입니다. 개체에 없는 PP는 표시하지 않습니다.
+  LEFT/RIGHT 페이지 전환, OK/BACK 개체 메뉴 복귀입니다.
+- 짧은 LEFT+RIGHT는 debounce 후 두 버튼 모두 release일 때 BACK 1회입니다.
+  1000ms 이상 chord는 기존 MODE SWITCH 1회이며 release BACK은 없습니다.
+  chord의 단독 short/long 입력은 억제합니다. 단독 Box 750ms long ±10과 OK press는 유지합니다.
+- BACK: 능력치/기술 → 개체 메뉴 → 목록 → Box 메인 → Home. 찾기 하위 메뉴는 찾기로,
+  찾기는 Box 메인으로 돌아갑니다. 무결과는 해당 검색 부모로 돌아갑니다.
+  기존 화면상 돌아가기 항목도 유지합니다(검색 목록의 돌아가기는 검색 부모로 복귀).
+- Status/Party/RegionSelect BACK은 Home입니다. Battle Move/Ball 선택 BACK은 Command로만
+  복귀하며 BattleState/HP/PP/턴/RNG/저장에 영향이 없습니다. Command BACK은 무시합니다.
+  공격 결과, 포획 연출/성공, 도주 성공, 탐험 진행, 저장 오류·복구 상태는 BACK으로 취소하지 않습니다.
+- DESK는 새 BACK을 무시합니다. 알림 dismiss/Timer/화면 이동/모드 전환의 기존 의미를 유지합니다.
+- 저장 버전/Box format/BoxRoot/transaction은 변경하지 않았습니다. 이번 단계의 조회에는
+  mutation, snapshot 생성, GC가 없습니다. 기존 선택 1개 캐시와 Box 인덱스를 재사용합니다.
+
+D.1 검증: `firmware/tests/game_state/run.ps1` 전체 PASS (MSVC `/W4 /WX`).
+짧은 chord의 release 순서/동시 release/단독 입력 억제, 기존 long/OK, BACK 계층,
+실제 stats, 0~4 기술/빈 슬롯/미등록 ID fallback, 전투 Move/Ball 취소의 전체 serialized
+GameState 및 NVS/Box 파일 불변성을 검사합니다. 기존 포획/복구/2048 Box 회귀도 PASS입니다.
+로그: `build/game-state-tests/g5-c2-d1-results.txt`.
+
+| D.1 ESP32 core 3.3.11 / Huge APP | Flash | 전역 RAM |
+| --- | ---: | ---: |
+| 애셋 포함 | 1,525,976 bytes (48%) | 81,560 bytes (24%) |
+| 애셋 없는 fallback | 1,522,964 bytes (48%) | 81,552 bytes (24%) |
+
+두 구성 모두 전체 compile/link PASS이며 전역 RAM은 D와 같습니다. 최종 빌드 소스 및
+partition CSV/binary/MD5를 대조했습니다. LittleFS subtype 0x83 및 NVS 0x9000/0x5000,
+나머지 partition offset/size는 그대로입니다. 기존 spiffs label/subtype 경고만 있습니다.
+로그: `build/g5-c2-d1-asset-build.txt`, `build/g5-c2-d1-fallback-build.txt`.
+`git diff --check` PASS. upload/실제 filesystem format/commit/push는 하지 않았습니다.
+
+실기 확인: 짧은 L+R을 서로 다른 순서로 떼도 BACK 1회인지, 긴 L+R 전환 뒤 BACK이 없는지,
+단독 짧게 ±1/길게 ±10과 OK가 유지되는지 확인합니다. Box 메뉴→개체→능력치/기술의 페이지,
+OLED1 이름/sprite/성별/shiny, 목록 복귀 위치, Status/Party/지역선택 BACK도 확인합니다.
+전투 기술/볼 메뉴 BACK 후 HP/PP/턴과 볼 수가 유지되고 정상 실행되는지, 결과 연출은
+BACK으로 취소되지 않는지 확인합니다. DESK Timer/알림, GAME/DESK 전환과 재부팅 후
+세이브 유지도 실기 확인 대상입니다.

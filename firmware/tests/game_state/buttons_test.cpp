@@ -34,8 +34,24 @@ void buttonsTests() {
     assert(tick(750)==BUTTON_NONE);
     if (!releaseEarly) { assert(tick(250)==BUTTON_MODE_SWITCH); assert(tick(1000)==BUTTON_NONE); }
     assert(edge(BUTTON_LEFT_PIN,HIGH)==BUTTON_NONE);
-    assert(tick(1000)==BUTTON_NONE); assert(edge(BUTTON_RIGHT_PIN,HIGH)==BUTTON_NONE);
+    assert(tick(1000)==BUTTON_NONE); assert(edge(BUTTON_RIGHT_PIN,HIGH)==(releaseEarly ? BUTTON_BACK : BUTTON_NONE));
+    assert(tick(1000)==BUTTON_NONE);
     assert(edge(BUTTON_LEFT_PIN,LOW)==BUTTON_NONE); assert(edge(BUTTON_LEFT_PIN,HIGH)==BUTTON_LEFT);
+  }
+  for (bool allow : {false,true}) {
+    for (bool together : {false,true}) {
+      reset(); assert(edge(BUTTON_LEFT_PIN,LOW,allow)==BUTTON_NONE);
+      assert(edge(BUTTON_RIGHT_PIN,LOW,allow)==BUTTON_NONE);
+      assert(tick(100,allow)==BUTTON_NONE);
+      if (together) {
+        hostPins[BUTTON_LEFT_PIN]=hostPins[BUTTON_RIGHT_PIN]=HIGH;
+        assert(tick(1,allow)==BUTTON_NONE); assert(tick(31,allow)==BUTTON_BACK);
+      } else {
+        assert(edge(BUTTON_RIGHT_PIN,HIGH,allow)==BUTTON_NONE);
+        assert(edge(BUTTON_LEFT_PIN,HIGH,allow)==BUTTON_BACK);
+      }
+      assert(tick(1000,allow)==BUTTON_NONE);
+    }
   }
   // Opposite raw press arrives just before long threshold but isn't debounced yet.
   reset(); assert(edge(BUTTON_LEFT_PIN,LOW)==BUTTON_NONE); assert(tick(740)==BUTTON_NONE);

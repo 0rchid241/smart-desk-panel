@@ -27,7 +27,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Host tests failed.' }
 $hostSketch = Join-Path $testBuild 'app-source'
 $sketch = Join-Path $repoRoot 'firmware/smart_desk_esp32'
 foreach ($relative in @('src/game/game_app.cpp', 'src/game/game_app.h', 'src/game/game_state.h',
-    'src/game/box_browser.h', 'src/game/capture_storage.h', 'src/game/box_storage.h', 'src/game/box_data.h', 'src/game/pokemon_record_codec.h', 'src/game/type.h', 'src/game/move.h', 'src/game/battle.h', 'src/game/pokemon.h', 'src/game/save_data.h', 'src/game/save_storage.h', 'src/game/exploration.h', 'src/game/encounter.h', 'src/core/app_config.h',
+    'src/game/box_details.h', 'src/game/box_browser.h', 'src/game/capture_storage.h', 'src/game/box_storage.h', 'src/game/box_data.h', 'src/game/pokemon_record_codec.h', 'src/game/type.h', 'src/game/move.h', 'src/game/battle.h', 'src/game/pokemon.h', 'src/game/save_data.h', 'src/game/save_storage.h', 'src/game/exploration.h', 'src/game/encounter.h', 'src/core/app_config.h',
     'src/core/app_types.h', 'src/hardware/displays.h', 'src/services/network_time.h', 'hangul_renderer.h')) {
   $targetFile = Join-Path $hostSketch $relative
   New-Item -ItemType Directory -Force -Path (Split-Path $targetFile) | Out-Null
