@@ -548,10 +548,14 @@ void battleTests();
 void saveWireTests();
 void savePairTests();
 void captureStorageTests();
+void boxBrowserTests();
+void buttonsTests();
 int main() {
   saveWireTests();
   savePairTests();
   captureStorageTests();
+  boxBrowserTests();
+  buttonsTests();
   battleTests();
   codecTests();
   storageTests();

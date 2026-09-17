@@ -9,11 +9,10 @@ const int BUTTON_PINS[3] = {
   BUTTON_RIGHT_PIN
 };
 
-const ButtonEvent BUTTON_EVENTS[3] = {
-  BUTTON_LEFT,
-  BUTTON_OK,
-  BUTTON_RIGHT
-};
+bool leftPending = false, rightPending = false;
+bool chordActive = false, chordTriggered = false;
+unsigned long chordStartedAt = 0;
+unsigned long pressedAt[3] = {};
 
 bool lastButtonReadings[3] = {
   HIGH,
@@ -39,6 +38,11 @@ unsigned long lastButtonChangeAt[3] = {
 } // namespace
 
 void init() {
+  leftPending = rightPending = chordActive = chordTriggered = false;
+  for (int i = 0; i < 3; ++i) {
+    lastButtonReadings[i] = stableButtonStates[i] = HIGH;
+    lastButtonChangeAt[i] = pressedAt[i] = 0;
+  }
   pinMode(
     BUTTON_LEFT_PIN,
     INPUT_PULLUP
@@ -56,7 +60,7 @@ void init() {
 
 }
 
-ButtonEvent readButtonEvent() {
+ButtonEvent readButtonEvent(bool allowLong) {
 
   unsigned long now =
     millis();
@@ -131,27 +135,12 @@ ButtonEvent readButtonEvent() {
   }
 
 
-  static bool leftPending =
-    false;
-
-  static bool rightPending =
-    false;
-
-  static bool chordActive =
-    false;
-
-  static bool chordTriggered =
-    false;
-
-  static unsigned long chordStartedAt =
-    0;
-
-
   if (
     pressedEdge[0]
   ) {
     leftPending =
       true;
+    pressedAt[0] = now;
   }
 
   if (
@@ -159,6 +148,7 @@ ButtonEvent readButtonEvent() {
   ) {
     rightPending =
       true;
+    pressedAt[2] = now;
   }
 
 
@@ -258,6 +248,19 @@ ButtonEvent readButtonEvent() {
       BUTTON_OK;
   }
 
+
+  // Chord handling above wins. Raw opposite LOW also suppresses a long
+  // while that second press is still debouncing. Consume release after a long.
+  if (allowLong && leftDown && leftPending && lastButtonReadings[0] == LOW && lastButtonReadings[2] == HIGH &&
+      now - pressedAt[0] >= BUTTON_LONG_HOLD_MS) {
+    leftPending = false;
+    return BUTTON_LEFT_LONG;
+  }
+  if (allowLong && rightDown && rightPending && lastButtonReadings[2] == LOW && lastButtonReadings[0] == HIGH &&
+      now - pressedAt[2] >= BUTTON_LONG_HOLD_MS) {
+    rightPending = false;
+    return BUTTON_RIGHT_LONG;
+  }
 
   // LEFT / RIGHT는 버튼을 뗄 때 단독 입력 확정.
   if (

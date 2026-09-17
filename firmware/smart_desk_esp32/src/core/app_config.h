@@ -31,6 +31,8 @@ const uint8_t REMINDER_DDAY =
 const unsigned long BUTTON_DEBOUNCE_MS =
   30;
 
+constexpr unsigned long BUTTON_LONG_HOLD_MS = 750;
+
 // LEFT + RIGHT를 이 시간 이상 동시에 누르면
 // DESK ↔ GAME 모드를 전환한다.
 const unsigned long MODE_SWITCH_HOLD_MS =

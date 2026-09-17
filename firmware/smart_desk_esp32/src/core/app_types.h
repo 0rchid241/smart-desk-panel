@@ -25,7 +25,9 @@ enum ButtonEvent {
   BUTTON_LEFT,
   BUTTON_OK,
   BUTTON_RIGHT,
-  BUTTON_MODE_SWITCH
+  BUTTON_MODE_SWITCH,
+  BUTTON_LEFT_LONG,
+  BUTTON_RIGHT_LONG
 };
 
 using MessageHandler = void (*)(const char*, const char*);

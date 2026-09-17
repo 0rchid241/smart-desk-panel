@@ -2,6 +2,7 @@
 #include "encounter.h"
 #include "save_storage.h"
 #include "capture_storage.h"
+#include "box_browser.h"
 #include "../hardware/displays.h"
 #include "../core/app_config.h"
 #include "../services/network_time.h"
@@ -51,6 +52,7 @@ unsigned long pokemonIdleFrameStartedAt = 0;
 const char* GAME_MENU_ITEMS[] = {
   "상태",
   "파티",
+  "박스",
   "탐험",
   "도감"
 };
@@ -77,6 +79,7 @@ enum class GameScreen {
   Home,
   Status,
   Party,
+  Box,
   RegionSelect,
   Exploring,
 
@@ -143,6 +146,187 @@ const char* regionMessage = nullptr;
 // GAME 그래픽 OLED가 현재 GameScreen과 다른 내용을 보여줄 수 있음을 표시한다.
 // update()는 DESK 모드에서도 실행되므로 직접 OLED를 그리지 않고 dirty만 세운다.
 bool graphicsDirty = true;
+
+enum class BoxScreen { Menu, Search, Generations, Number, NumberError, List, Detail, Empty, NoResults, Error };
+BoxBrowser::Browser boxBrowser;
+BoxScreen boxScreen = BoxScreen::Menu, boxReturn = BoxScreen::Menu;
+uint16_t boxChoice = 0, boxTop = 0, boxSelected = 0, boxListTop = 0;
+uint8_t boxDigits[4] = {}, boxDigit = 0;
+char boxViewTitle[32] = {};
+PokemonGame::PokemonInstance boxPokemon;
+
+void boxError() {
+  boxBrowser.close(); boxPokemon = {}; boxScreen = BoxScreen::Error; graphicsDirty = true;
+}
+void boxMenu(BoxScreen next) {
+  boxScreen = next; boxChoice = boxTop = 0; boxPokemon = {}; graphicsDirty = true;
+}
+void closeBox() {
+  boxBrowser.close(); boxPokemon = {}; screen = GameScreen::Home; graphicsDirty = true;
+}
+void boxReadSelection() {
+  boxPokemon = {};
+  if (boxSelected < boxBrowser.index().count() && !boxBrowser.read(boxSelected, boxPokemon)) boxError();
+  graphicsDirty = true;
+}
+void boxView(BoxBrowser::View view, uint16_t argument, const char* title, BoxScreen parent) {
+  if (!boxBrowser.select(view, argument)) { boxError(); return; }
+  std::snprintf(boxViewTitle, sizeof(boxViewTitle), "%s", title);
+  boxReturn = parent; boxSelected = boxListTop = 0;
+  boxScreen = boxBrowser.index().count() ? BoxScreen::List : BoxScreen::NoResults;
+  boxReadSelection();
+}
+void keepVisible(uint16_t selected, uint16_t& top, uint16_t rows) {
+  if (selected < top) top = selected;
+  if (selected >= top + rows) top = selected - rows + 1;
+}
+uint16_t boxWrap(uint16_t value, int delta, uint16_t count) {
+  const int wrapped = (static_cast<int>(value) + delta) % count;
+  return static_cast<uint16_t>(wrapped < 0 ? wrapped + count : wrapped);
+}
+void handleBoxButton(ButtonEvent button) {
+  using BoxBrowser::View;
+  const int step = button == BUTTON_LEFT ? -1 : button == BUTTON_RIGHT ? 1 :
+    button == BUTTON_LEFT_LONG ? -10 : button == BUTTON_RIGHT_LONG ? 10 : 0;
+  if (boxScreen == BoxScreen::Error || boxScreen == BoxScreen::Empty) {
+    if (button == BUTTON_OK) closeBox();
+  } else if (boxScreen == BoxScreen::NoResults) {
+    if (button == BUTTON_OK) boxMenu(boxReturn);
+  } else if (boxScreen == BoxScreen::NumberError) {
+    if (button == BUTTON_OK) { boxScreen = BoxScreen::Number; boxDigit = 0; }
+    else if (button == BUTTON_LEFT_LONG) boxMenu(BoxScreen::Search);
+  } else if (boxScreen == BoxScreen::Number) {
+    if (button == BUTTON_LEFT_LONG) boxMenu(BoxScreen::Search);
+    else if (button == BUTTON_LEFT || button == BUTTON_RIGHT)
+      boxDigits[boxDigit] = static_cast<uint8_t>(boxWrap(boxDigits[boxDigit], step, 10));
+    else if (button == BUTTON_OK) {
+      if (boxDigit < 3) ++boxDigit;
+      else {
+        uint16_t id = 0;
+        for (auto digit : boxDigits) id = static_cast<uint16_t>(id * 10 + digit);
+        if (!id || id > PokemonGame::POKEDEX_SPECIES_COUNT) boxScreen = BoxScreen::NumberError;
+        else {
+          char title[16]; std::snprintf(title, sizeof(title), "#%03u", static_cast<unsigned>(id));
+          boxView(View::Species, id, title, BoxScreen::Search);
+        }
+      }
+    }
+  } else if (boxScreen == BoxScreen::List || boxScreen == BoxScreen::Detail) {
+    const uint16_t count = boxBrowser.index().count();
+    if (step) {
+      // Short navigation includes the back action. Fast jumps count Pokemon only,
+      // just like details, so +/-10 never spends a step on a menu action.
+      const bool fast = button == BUTTON_LEFT_LONG || button == BUTTON_RIGHT_LONG;
+      if (fast && boxSelected == count) boxSelected = step > 0 ? count - 1 : 0;
+      boxSelected = boxWrap(boxSelected, step, count + (boxScreen == BoxScreen::List && !fast ? 1 : 0));
+      keepVisible(boxSelected, boxListTop, 3); boxReadSelection();
+    } else if (button == BUTTON_OK) {
+      if (boxScreen == BoxScreen::Detail) boxScreen = BoxScreen::List;
+      else if (boxSelected == count) boxMenu(boxReturn);
+      else boxScreen = BoxScreen::Detail;
+      graphicsDirty = true;
+    }
+  } else {
+    const uint16_t count = boxScreen == BoxScreen::Menu ? 5 : boxScreen == BoxScreen::Search ? 4 : 10;
+    if (button == BUTTON_LEFT || button == BUTTON_RIGHT) {
+      boxChoice = boxWrap(boxChoice, step, count); keepVisible(boxChoice, boxTop, 2);
+    } else if (button == BUTTON_OK) {
+      if (boxScreen == BoxScreen::Menu) {
+        if (boxChoice == 0) boxView(View::Recent, 0, "최근", BoxScreen::Menu);
+        else if (boxChoice == 1) boxView(View::Dex, 0, "도감순", BoxScreen::Menu);
+        else if (boxChoice == 2) boxView(View::All, 0, "전체", BoxScreen::Menu);
+        else if (boxChoice == 3) boxMenu(BoxScreen::Search);
+        else closeBox();
+      } else if (boxScreen == BoxScreen::Search) {
+        if (boxChoice == 0) {
+          boxScreen = BoxScreen::Number; boxDigit = 0;
+          for (auto& digit : boxDigits) digit = 0;
+        } else if (boxChoice == 1) boxMenu(BoxScreen::Generations);
+        else if (boxChoice == 2) boxView(View::Shiny, 0, "색이 다른", BoxScreen::Search);
+        else boxMenu(BoxScreen::Menu);
+      } else {
+        if (boxChoice == 9) boxMenu(BoxScreen::Search);
+        else {
+          char title[24]; std::snprintf(title, sizeof(title), "%u세대", static_cast<unsigned>(boxChoice + 1));
+          boxView(View::Generation, boxChoice + 1, title, BoxScreen::Generations);
+        }
+      }
+    }
+  }
+}
+
+const char* boxName(uint16_t speciesId, char* fallback, size_t size) {
+  const auto* species = PokemonGame::findSpecies(speciesId);
+  if (species) return species->name;
+  std::snprintf(fallback, size, "#%03u", static_cast<unsigned>(speciesId));
+  return fallback;
+}
+const char* boxGender() {
+  using PokemonGame::Gender;
+  return boxPokemon.gender == Gender::Male ? "M" : boxPokemon.gender == Gender::Female ? "F" : "-";
+}
+void drawBoxText(Adafruit_SSD1306& oled) {
+  char line[64], nameBuffer[16];
+  if (boxScreen == BoxScreen::List) {
+    const uint16_t count = boxBrowser.index().count();
+    if (boxSelected == count) drawUtf8TextLineClipped(oled, 0, 0, 128, "돌아가기");
+    else {
+      std::snprintf(line, sizeof(line), "%u/%u", static_cast<unsigned>(boxSelected + 1), static_cast<unsigned>(count));
+      const int16_t x = static_cast<int16_t>(128 - measureUtf8TextWidth(line));
+      drawUtf8TextLineClipped(oled, 0, 0, x - 4, boxViewTitle);
+      oled.setCursor(x, 4); oled.print(line);
+    }
+    for (uint16_t row = 0; row < 3 && boxListTop + row <= count; ++row) {
+      const uint16_t index = boxListTop + row;
+      const auto* entry = boxBrowser.index().at(index);
+      const char* name = entry ? boxName(entry->speciesId, nameBuffer, sizeof(nameBuffer)) : "돌아가기";
+      const int16_t y = static_cast<int16_t>(16 + row * 16);
+      oled.setCursor(0, y + 4); oled.print(index == boxSelected ? ">" : " ");
+      if (index == boxSelected) drawScrollingUtf8Text(oled, 12, y, 116, name);
+      else drawUtf8TextLineClipped(oled, 12, y, 116, name);
+    }
+  } else if (boxScreen == BoxScreen::Detail) {
+    drawScrollingUtf8Text(oled, 0, 0, 128, boxName(boxPokemon.speciesId, nameBuffer, sizeof(nameBuffer)));
+    std::snprintf(line, sizeof(line), "#%03u Lv.%u %s", static_cast<unsigned>(boxPokemon.speciesId),
+      static_cast<unsigned>(boxPokemon.level), boxGender());
+    oled.setCursor(0, 20); oled.print(line);
+    const auto stats = PokemonGame::calculateStats(boxPokemon);
+    if (stats.hp) std::snprintf(line, sizeof(line), "HP %u/%u", static_cast<unsigned>(boxPokemon.currentHp), static_cast<unsigned>(stats.hp));
+    else std::snprintf(line, sizeof(line), "HP %u/?", static_cast<unsigned>(boxPokemon.currentHp));
+    oled.setCursor(0, 34); oled.print(line);
+    std::snprintf(line, sizeof(line), "ID %lu", static_cast<unsigned long>(boxPokemon.instanceId));
+    oled.setCursor(0, 48); oled.print(line);
+  } else if (boxScreen == BoxScreen::Number) {
+    drawUtf8Text(oled, 0, 0, "도감번호 찾기");
+    oled.setTextSize(2);
+    for (uint8_t i = 0; i < 4; ++i) { oled.setCursor(16 + i * 24, 24); oled.print(boxDigits[i]); }
+    oled.setTextSize(1); oled.setCursor(18 + boxDigit * 24, 44); oled.print("^");
+    oled.setCursor(0, 56); oled.print("L hold: BACK   OK: >");
+  } else if (boxScreen == BoxScreen::Menu || boxScreen == BoxScreen::Search || boxScreen == BoxScreen::Generations) {
+    const char* const mainItems[] = {"최근 포획", "도감순 보기", "전체 보기", "찾기", "돌아가기"};
+    const char* const searchItems[] = {"도감번호", "세대", "색이 다른", "돌아가기"};
+    drawUtf8Text(oled, 0, 0, boxScreen == BoxScreen::Menu ? "포켓몬 박스" : boxScreen == BoxScreen::Search ? "찾기" : "세대 찾기");
+    const uint16_t count = boxScreen == BoxScreen::Menu ? 5 : boxScreen == BoxScreen::Search ? 4 : 10;
+    for (uint16_t row = 0; row < 2 && boxTop + row < count; ++row) {
+      const uint16_t item = boxTop + row;
+      const char* label;
+      if (boxScreen == BoxScreen::Menu) label = mainItems[item];
+      else if (boxScreen == BoxScreen::Search) label = searchItems[item];
+      else { std::snprintf(line, sizeof(line), "%u세대", static_cast<unsigned>(item + 1)); label = item == 9 ? "돌아가기" : line; }
+      const int16_t y = static_cast<int16_t>(24 + row * 20);
+      oled.setCursor(0, y + 4); oled.print(item == boxChoice ? ">" : " ");
+      drawUtf8TextLineClipped(oled, 12, y, 116, label);
+    }
+  } else {
+    const char* title = boxScreen == BoxScreen::Error ? "박스 읽기 오류" :
+      boxScreen == BoxScreen::Empty ? "포켓몬 박스" : boxScreen == BoxScreen::NumberError ? "번호 범위" : boxViewTitle;
+    drawUtf8Text(oled, 0, 0, title);
+    if (boxScreen == BoxScreen::Empty) drawUtf8Text(oled, 0, 24, "박스가 비어 있다");
+    if (boxScreen == BoxScreen::NoResults) drawUtf8Text(oled, 0, 24, "보유 없음");
+    if (boxScreen == BoxScreen::NumberError) { oled.setCursor(0, 24); oled.print("0001~1025"); }
+    drawUtf8Text(oled, 0, 48, "OK 돌아가기");
+  }
+}
 
 void resetBattleCommandUi() {
   battleUiMode = BattleUiMode::Command;
@@ -687,6 +871,33 @@ const uint8_t* localWildSprite(
   }
 }
 #endif
+
+void drawBoxGraphic(Adafruit_SSD1306& oled) {
+  oled.clearDisplay(); oled.setTextColor(SSD1306_WHITE); oled.setTextSize(1);
+  if (!boxPokemon.instanceId || (boxScreen != BoxScreen::List && boxScreen != BoxScreen::Detail)) {
+    drawUtf8Text(oled, 12, 24, "포켓몬 박스"); oled.display(); return;
+  }
+  bool drawn = false;
+#if HAS_LOCAL_WILD_ASSET
+  const auto* sprite = boxPokemon.formId == 0 ? localWildSprite(boxPokemon.speciesId) : nullptr;
+  if (sprite) {
+    oled.drawBitmap(0, 16, sprite, WILD_SPRITE_WIDTH, WILD_SPRITE_HEIGHT, SSD1306_WHITE);
+    drawn = true;
+  }
+#endif
+  if (!drawn) { oled.setTextSize(3); oled.setCursor(16, 24); oled.print("?"); oled.setTextSize(1); }
+  char line[24];
+  std::snprintf(line, sizeof(line), "#%03u", static_cast<unsigned>(boxPokemon.speciesId));
+  oled.setCursor(58, 0); oled.print(line);
+  std::snprintf(line, sizeof(line), "Lv.%u %s", static_cast<unsigned>(boxPokemon.level), boxGender());
+  oled.setCursor(58, 16); oled.print(line);
+  if (boxPokemon.shiny) { oled.setCursor(58, 32); oled.print("SHINY"); }
+  if (boxPokemon.formId) {
+    std::snprintf(line, sizeof(line), "FORM %u", static_cast<unsigned>(boxPokemon.formId));
+    oled.setCursor(58, 48); oled.print(line);
+  }
+  oled.display();
+}
 
 void drawWildEncounterGraphic(
   Adafruit_SSD1306& target
@@ -2093,6 +2304,7 @@ void drawBattleGraphic(
 } // namespace
 
 void init() {
+  boxBrowser.close(); boxPokemon = {};
   battleReport =
     PokemonGame::BattleTurnReport{};
 
@@ -2184,6 +2396,7 @@ void init() {
 }
 
 void update() {
+  if (screen == GameScreen::Box) return;
   using namespace PokemonGame;
 
   if (
@@ -2255,6 +2468,9 @@ void drawDeskPet() {
 }
 
 void drawGameGraphics() {
+  if (screen == GameScreen::Box) {
+    drawBoxGraphic(Displays::desk()); graphicsDirty = false; return;
+  }
   if (
     screen ==
     GameScreen::CaptureAnimation
@@ -2325,6 +2541,10 @@ void drawGameTextScreen() {
   oled.setTextSize(
     1
   );
+
+  if (screen == GameScreen::Box) {
+    drawBoxText(oled); oled.display(); return;
+  }
 
   if (
     screen ==
@@ -2913,6 +3133,11 @@ void drawGameTextScreen() {
 void updatePokemonAnimation(
   DeviceMode deviceMode
 ) {
+  if (deviceMode == MODE_DESK) leaveGameMode();
+  if (screen == GameScreen::Box) {
+    if (graphicsDirty) drawGameGraphics();
+    return;
+  }
   if (
     screen ==
     GameScreen::CaptureAnimation
@@ -3039,6 +3264,12 @@ void updatePokemonAnimation(
 void handleButton(
   ButtonEvent button
 ) {
+  if (screen == GameScreen::Box) {
+    handleBoxButton(button); drawGameTextScreen();
+    if (graphicsDirty) drawGameGraphics();
+    return;
+  }
+  if (button == BUTTON_LEFT_LONG || button == BUTTON_RIGHT_LONG) return;
   if (
     screen ==
     GameScreen::CaptureAnimation
@@ -3791,9 +4022,15 @@ void handleButton(
         GameScreen::Party;
 
       drawGameTextScreen();
+    } else if (gameMenuIndex == 2) {
+      screen = GameScreen::Box;
+      boxMenu(BoxScreen::Menu);
+      if (!boxBrowser.open(gameSave.boxRoot)) boxError();
+      else if (!boxBrowser.index().count()) { boxBrowser.close(); boxScreen = BoxScreen::Empty; }
+      drawGameTextScreen(); drawGameGraphics();
     } else if (
       gameMenuIndex ==
-      2
+      3
     ) {
       regionChoice = 0;
       regionMessage = nullptr;
@@ -3807,6 +4044,9 @@ void handleButton(
   }
 }
 
+bool boxBrowserActive() { return screen == GameScreen::Box; }
+void leaveGameMode() { if (screen == GameScreen::Box) closeBox(); }
+
 const PokemonGame::GameState& state() {
   return gameSave.state;
 }
@@ -3814,6 +4054,7 @@ const PokemonGame::GameState& state() {
 bool saveState(
   const PokemonGame::GameState& next
 ) {
+  if (screen == GameScreen::Box) return false;
   PokemonGame::GameSave candidate =
     gameSave;
 

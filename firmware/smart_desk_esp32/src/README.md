@@ -751,3 +751,89 @@ fallback 소스의 .h/.cpp/.ino 및 partitions.csv는 원본과 동일하고 loc
 확인했습니다. 기존 label 'spiffs'/subtype 0x83 경고는 위 B2.1 설명과 같습니다.
 실기 upload/format/commit/push는 실행하지 않았습니다. 실행 중 heap/stack 및 Box가 커졌을 때의
 전체 snapshot 검증 지연은 실기에서 별도 확인해야 합니다.
+
+## G5-C2-D — Scalable Box Browser (읽기 전용)
+
+Home은 상태 → 파티 → 박스 → 탐험 → 도감 순서입니다. 물리 저장은 기존 flat 2048 slots이며,
+Box 1/2 같은 구획이나 persistent index를 추가하지 않습니다. 최근/도감/전체/검색은 동일한
+NVS BoxRoot snapshot 위에 만든 가상 View입니다. Box 메뉴는 최근 포획, 도감순 보기, 전체 보기,
+찾기, 돌아가기이며 메뉴는 커서가 움직이는 2행 viewport입니다.
+
+`box_browser.h/.cpp`의 Browser는 정확한 root로 mount(false)/open한 뒤 B1 전체 검증과
+key/count/CRC/root 형식 일치를 확인합니다. occupied slot을 한 번 순서대로 읽어 Index를 만들고,
+이후 View 변경은 RAM에서만 필터/정렬합니다. Index는 종 테이블에 의존하지 않는 1~1025 범위를
+지원합니다. 현재 B1의 실제 개체 검증은 기존 3종 fixture 범위 그대로이며, D 때문에 알 수 없는
+종을 저장 데이터로 허용하거나 새 종 콘텐츠를 추가하지 않습니다. 모든 세대 경계는 독립적인
+숫자 메타데이터 인덱스 테스트로 검증합니다.
+
+| View | 필터 | 순서 |
+| --- | --- | --- |
+| 최근 포획 | 전체 | instanceId 내림차순 |
+| 도감순 보기 | 전체 | speciesId 오름차순, 같은 종 instanceId 오름차순 |
+| 전체 보기 | 전체 | occupied slot 오름차순 |
+| 도감번호 | speciesId 정확히 일치, 중복 모두 포함 | instanceId 내림차순 |
+| 세대 | 1~151 / 152~251 / 252~386 / 387~493 / 494~649 / 650~721 / 722~809 / 810~905 / 906~1025 | 도감순 |
+| 색이 다른 | shiny=true | instanceId 내림차순 |
+
+도감번호는 4자리이며 LEFT/RIGHT로 현재 자리를 0~9 wrap, OK로 다음 자리로 이동합니다.
+마지막 자리 OK로 검색합니다. 0000/1026 이상은 범위 안내 후 OK로 입력에 돌아갑니다.
+LEFT 길게는 입력 취소입니다. 결과가 없으면 안내 후 OK로 상위 검색 메뉴로 돌아갑니다.
+
+OLED2 목록은 header(선택 번호/결과 수) + 최대 3행입니다. 커서가 viewport를 벗어날 때만
+스크롤하며 선택 행만 기존 UTF-8 scrolling helper를 사용합니다. 다른 행은 영역 내 clipping을
+사용합니다. 마지막에는 별도 돌아가기 행이 있고 결과 수에는 포함하지 않습니다. 짧은 L/R은
+이 행을 포함해 wrap합니다. 긴 L/R은 이 행을 건너뛰고 실제 개체 수 기준 ±10 wrap합니다.
+목록 OK는 상세, 상세 OK는 선택 위치를 유지한 목록 복귀입니다. 상세에서도 ±1/±10 wrap합니다.
+상세는 이름, #번호/Lv/성별, 실제 HP/최대 HP, instanceId를 표시합니다.
+OLED1은 선택 개체의 기존 48x48 local wild sprite와 #번호/Lv/성별/SHINY/폼을 표시합니다.
+애셋 또는 해당 sprite가 없으면 '?' fallback이며 새 asset은 없습니다.
+
+버튼은 Box에서만 `readButtonEvent(true)`로 단독 750ms LONG을 활성화합니다. 다른 화면은
+기존 OK press / L/R release 동작을 유지합니다. LONG 뒤 release는 소비하고, 기존 1000ms
+LEFT+RIGHT chord가 우선합니다. 반대 버튼의 raw LOW도 확인해 debounce 중 LONG 오발을 막습니다.
+알림 중에는 LONG을 활성화하지 않습니다. 핀과 chord 시간은 바꾸지 않습니다.
+
+RAM: Entry는 instanceId 4 + slot 2 + speciesId 2 + shiny 1 + padding 3 = 12 bytes입니다.
+2048 metadata 24,576 + uint16_t 정렬 인덱스 4,096 + count 필드 4 = Index 28,676 bytes입니다.
+이는 재사용하는 전역 버퍼이며 내용을 파일/NVS에 저장하지 않습니다. 전체 PokemonInstance
+배열을 복사하지 않고 선택 개체 1개만 캐시합니다. std::sort는 O(n log n), 필터는 O(n),
+비교 함수는 RAM만 읽습니다. 이동은 선택 레코드 1회 read이고 redraw에는 filesystem read가 없습니다.
+진입 시 기존 B1 CRC/개체/중복 ID 검증은 그대로 수행합니다. B1의 64-ID scratch 중복 검증은
+최대 32 passes이므로 전체 진입 비용이 새 인덱스의 선형 스캔/정렬 비용보다 클 수 있습니다.
+실제 2048개 Box에서의 flash read 지연은 실기 측정 대상입니다.
+
+GameApp은 Box 화면에서 update/saveState를 통한 저장을 막고 Browser에는 쓰기 API가 없습니다.
+종료/오류/init 및 DESK 전환에서 close/reset하며 GAME 복귀는 Home입니다. 따라서 다음 진입은
+현재 root를 다시 검증합니다. 빈 Box도 handle을 즉시 닫습니다. 목록·정렬·검색·상세는
+GameSave/BoxRoot/sequence/Party/ID/도감/탐험/배틀/NVS/파일 바이트를 변경하지 않습니다.
+
+후속 E의 이동/방생은 이 read-only 모듈을 저장 경로로 사용하지 않고 기존 transaction coordinator에
+연결해야 합니다. mutation/GC 전 Browser를 닫고, 확정 root로 다시 열어 transient index를
+재구축해야 합니다. GC에서는 여전히 A/B 양쪽 root를 보호해야 합니다. D에는 이동/방생/교체/GC가 없습니다.
+
+호스트 검증은 기존 run.ps1에 포함합니다: 단일/중복/sparse/2048 슬롯, 모든 세대 경계,
+정렬/번호 범위/shiny/무결과, missing/corrupt/root mismatch/I/O, 100회 반복의 파일/NVS 불변,
+인덱스 filter/sort와 redraw의 read 횟수, 이동당 1 record read, 버튼 short/long/chord/debounce/
+시간 wrap, 애셋 및 fallback 실제 UI와 모든 기존 회귀를 검사합니다.
+
+D 최종 검증: run.ps1 전체 PASS (MSVC /W4 /WX), git diff --check PASS.
+초기화/load 없이 실제 UI를 100회 다시 열고 닫은 뒤에도 RAM GameState와 NVS/파일 바이트가
+동일합니다. 호스트 memory-backed LittleFS의 full Box open+4 Views는 최종 실행에서 9ms였으며,
+이는 ESP32 flash 성능 수치가 아닙니다. 테스트 로그: build/game-state-tests/g5-c2-d-results.txt.
+
+ESP32 core 3.3.11 / ESP32 Dev Module / Huge APP 최종 compile/link 결과:
+
+| G5-C2-D 빌드 | Flash | 전역 RAM | C 대비 전역 RAM 증가 |
+| --- | ---: | ---: | ---: |
+| 로컬 애셋 포함 | 1,524,992 bytes (48%) | 81,560 bytes (24%) | 29,104 bytes |
+| 애셋 없는 fallback | 1,522,012 bytes (48%) | 81,552 bytes (24%) | 29,104 bytes |
+
+기존 B1 이름의 build 경로를 재사용했으며 산출물은 최종 D 소스와 대조했습니다. fallback에는
+local_game_assets가 없고 .h/.cpp/.ino/partitions.csv가 원본과 같습니다. 두 최종 partition binary의
+LittleFS subtype 0x83, NVS offset/size와 MD5를 확인했습니다. 기존 'spiffs' label 경고는 B2.1의
+의도된 설정입니다. 보드 upload/실제 format/commit/push는 실행하지 않았습니다.
+
+실기에서는 빈 Box, 각 View와 중복 종, 0025/0000/1026 입력 및 취소, 세대/shiny 무결과,
+짧게 ±1/길게 ±10(빠른 이동은 돌아가기 행 제외), 상세 복귀 위치, 750ms 단독 long과 1초 chord,
+Box 중 DESK 전환→GAME Home 복귀→재진입, 재부팅 후 동일 개체, 애셋/fallback 배치를 확인합니다.
+특히 full Box 진입 지연과 Wi-Fi/알림 사용 중 heap/stack 여유는 실제 보드에서 측정해야 합니다.

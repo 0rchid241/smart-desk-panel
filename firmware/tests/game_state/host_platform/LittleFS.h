@@ -16,11 +16,13 @@ inline std::set<std::string> directories;
 inline bool mounted = false, failMount = false, formatRequested = false;
 inline bool failFormat = false, needsFormat = false;
 inline unsigned formats = 0;
+inline size_t readCalls = 0, readBytes = 0, writeCalls = 0, readOpens = 0, readCloses = 0;
 inline bool failOpen = false, failMkdir = false, failRemove = false, failSeek = false;
 inline bool failReopen = false, corruptFlush = false, truncateClose = false;
 inline size_t writeBudget = std::numeric_limits<size_t>::max();
 inline size_t readBudget = std::numeric_limits<size_t>::max();
 inline void reset() {
+  readCalls = readBytes = writeCalls = readOpens = readCloses = 0;
   files.clear(); directories.clear(); mounted = failMount = formatRequested = false;
   failFormat = needsFormat = false; formats = 0;
   failOpen = failMkdir = failRemove = failSeek = failReopen = corruptFlush = truncateClose = false;
@@ -35,14 +37,16 @@ public:
   explicit operator bool() const { return bytes_ && FakeLittleFS::mounted; }
   size_t size() const { return bytes_ ? bytes_->size() : 0; }
   size_t read(uint8_t* output, size_t length) {
+    ++FakeLittleFS::readCalls;
     if (!*this || position_ > bytes_->size()) return 0;
     size_t count = std::min(length, bytes_->size() - position_);
     count = std::min(count, FakeLittleFS::readBudget);
     std::memcpy(output, bytes_->data() + position_, count);
-    position_ += count; FakeLittleFS::readBudget -= count;
+    position_ += count; FakeLittleFS::readBudget -= count; FakeLittleFS::readBytes += count;
     return count;
   }
   size_t write(const uint8_t* input, size_t length) {
+    ++FakeLittleFS::writeCalls;
     if (!*this || !write_) return 0;
     const size_t count = std::min(length, FakeLittleFS::writeBudget);
     if (position_ + count > bytes_->size()) bytes_->resize(position_ + count);
@@ -60,6 +64,7 @@ public:
     }
   }
   void close() {
+    if (bytes_ && !write_) ++FakeLittleFS::readCloses;
     if (bytes_ && write_) {
       if (FakeLittleFS::truncateClose && !bytes_->empty()) {
         bytes_->pop_back(); FakeLittleFS::truncateClose = false;
@@ -107,6 +112,7 @@ public:
     const bool writing = std::strcmp(mode, "w") == 0;
     if (writing) FakeLittleFS::files[path] = std::make_shared<FakeLittleFS::Bytes>();
     auto found = FakeLittleFS::files.find(path);
+    if (!writing && found != FakeLittleFS::files.end()) ++FakeLittleFS::readOpens;
     return found == FakeLittleFS::files.end() ? fs::File{} : fs::File(found->second, writing);
   }
 };

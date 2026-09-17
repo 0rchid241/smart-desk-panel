@@ -11,3 +11,9 @@ struct HostSerial {
   template<class T> void println(const T&) {}
 };
 inline HostSerial Serial;
+
+constexpr bool HIGH = true, LOW = false;
+constexpr int INPUT_PULLUP = 2;
+inline bool hostPins[40] = {};
+inline void pinMode(int pin, int) { hostPins[pin] = HIGH; }
+inline bool digitalRead(int pin) { return hostPins[pin]; }

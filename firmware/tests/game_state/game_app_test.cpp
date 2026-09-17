@@ -1,3 +1,4 @@
+#include "box_ui_test.h"
 #include "capture_test_support.h"
 #include "game_app.h"
 #include "save_storage.h"
@@ -113,6 +114,21 @@ void drawUtf8Text(
       text
     }
   );
+}
+
+int16_t measureUtf8TextWidth(const char* text) {
+  int16_t width=0;
+  for (auto p=reinterpret_cast<const unsigned char*>(text);*p;++p)
+    if (*p<0x80) width+=6; else if ((*p & 0xc0)==0xc0) width+=16;
+  return width;
+}
+
+void drawUtf8TextLineClipped(Adafruit_SSD1306& oled, int16_t x, int16_t y,
+                             int16_t width, const char* text, int16_t) {
+  assert(x >= 0 && width >= 0 && x + width <= 128 && y >= 0 && y + 16 <= 64);
+  // Record the logical text; real renderer clips glyph pixels to this viewport.
+  oled.text += text;
+  oled.textRuns.push_back({x,y,text});
 }
 
 void drawScrollingUtf8Text(
@@ -446,7 +462,8 @@ int main() {
     BUTTON_OK
   );
 
-  // 탐험 메뉴는 파티 다음 항목이다.
+  // 파티 다음 박스 항목을 지나 탐험으로 이동.
+  GameApp::handleButton(BUTTON_RIGHT);
   GameApp::handleButton(
     BUTTON_RIGHT
   );
@@ -2416,5 +2433,7 @@ int main() {
     assert(caught.instanceId == 4 && caught.speciesId == 19 && caught.shiny && caught.currentHp == 3);
   }
   std::puts("PASS app C: full Box/ID notices, Box success animation/message, write failures/retry, Indeterminate lock/reboot");
+
+  boxUiTests(gameOled, deskOled, false);
 
 }

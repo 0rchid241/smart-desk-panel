@@ -4,5 +4,6 @@
 namespace Buttons {
 void init();
 // OK: press edge. LEFT/RIGHT: release edge. Chord suppresses both singles.
-ButtonEvent readButtonEvent();
+// Opt-in only for Box browsing; legacy screens keep release-edge holds.
+ButtonEvent readButtonEvent(bool allowLong = false);
 }

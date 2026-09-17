@@ -19,6 +19,7 @@ static void switchDeviceMode() {
       GameApp::drawGameTextScreen();
     }
   } else {
+    GameApp::leaveGameMode();
     deviceMode = MODE_DESK;
     Serial.println("Mode changed: DESK");
     GameApp::drawDeskPet();
@@ -67,7 +68,8 @@ void setup() {
 }
 
 void loop() {
-  handleButton(Buttons::readButtonEvent());
+  handleButton(Buttons::readButtonEvent(deviceMode == MODE_GAME &&
+    !DeskApp::notificationActive() && GameApp::boxBrowserActive()));
   const bool reconnected = NetworkTime::update();
   CalendarService::update(reconnected);
   CalendarService::checkScheduleReminders(
