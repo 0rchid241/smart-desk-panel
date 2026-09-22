@@ -2433,7 +2433,7 @@ int main() {
     GameApp::handleButton(BUTTON_OK);
     assert(visible("SAVE ERROR") && !visible("포획 중...") && !visible("박스로 전송!"));
     assert(stateBytes(GameApp::state()) == before);
-    assert(FakeLittleFS::files.size() == 2);
+    assert(FakeLittleFS::files.size() == (scenario == 1 ? 2u : 1u)); // Only uncertainty retains the candidate.
     FakeNvs::rejectWrite = FakeNvs::failReadAfterWrite = FakeNvs::failRead = false;
     FakeLittleFS::writeBudget = std::numeric_limits<size_t>::max();
     const auto writes = FakeNvs::writes;

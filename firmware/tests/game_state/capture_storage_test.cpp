@@ -183,13 +183,13 @@ void storageFailures() {
     assert(encode(save) == before && !report.captured && report.caught.instanceId == 0);
     assert(FakeNvs::writes == writes + (failure == 4 ? 1u : 0u));
     assert(*FakeLittleFS::files.at(path(sourceRoot)) == source);
-    assert(FakeLittleFS::files.size() == 2); // Retained orphan, never adopted/deleted.
+    assert(FakeLittleFS::files.size() == 1); // Proven exact failed destination removed.
     FakeNvs::rejectWrite = false; FakeLittleFS::failOpen = false;
     FakeLittleFS::writeBudget = std::numeric_limits<size_t>::max();
     assert(GameSaveStorage::validatePair(save) == GameSaveStorage::LoadResult::Loaded);
     assert(CaptureStorage::attempt(save, CaptureBall::Master, report) == Result::Committed);
-    assert(save.boxRoot.generation == sourceRoot.generation + 2 && save.boxRoot.occupiedCount == 1);
-    assert(FakeLittleFS::files.size() == 3 && report.caught.instanceId + 1 == save.state.progress.nextInstanceId);
+    assert(save.boxRoot.generation == sourceRoot.generation + 1 && save.boxRoot.occupiedCount == 1);
+    assert(FakeLittleFS::files.size() == 2 && report.caught.instanceId + 1 == save.state.progress.nextInstanceId);
     assert(*FakeLittleFS::files.at(path(sourceRoot)) == source);
   }
   std::puts("PASS C write/flush/reopen/validation/NotCommitted failures: old pair intact, orphan collision retry");

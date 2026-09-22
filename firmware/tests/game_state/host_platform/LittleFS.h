@@ -8,6 +8,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <functional>
 
 namespace FakeLittleFS {
 using Bytes = std::vector<uint8_t>;
@@ -16,6 +17,12 @@ inline std::set<std::string> directories;
 inline bool mounted = false, failMount = false, formatRequested = false;
 inline bool failFormat = false, needsFormat = false;
 inline unsigned formats = 0;
+inline bool failDirOpen = false, failDirClose = false;
+inline size_t directoryReadBudget = std::numeric_limits<size_t>::max();
+inline size_t removeBudget = std::numeric_limits<size_t>::max();
+inline size_t directoryOpens = 0, directoryCloses = 0;
+inline std::vector<std::string> removeAttempts;
+inline std::function<void(const char*)> beforeRemove;
 inline size_t readCalls = 0, readBytes = 0, writeCalls = 0, readOpens = 0, readCloses = 0;
 inline bool failOpen = false, failMkdir = false, failRemove = false, failSeek = false;
 inline bool failReopen = false, corruptFlush = false, truncateClose = false;
@@ -23,6 +30,9 @@ inline size_t writeBudget = std::numeric_limits<size_t>::max();
 inline size_t readBudget = std::numeric_limits<size_t>::max();
 inline void reset() {
   readCalls = readBytes = writeCalls = readOpens = readCloses = 0;
+  failDirOpen = failDirClose = false;
+  directoryReadBudget = removeBudget = std::numeric_limits<size_t>::max();
+  directoryOpens = directoryCloses = 0; removeAttempts.clear(); beforeRemove = {};
   files.clear(); directories.clear(); mounted = failMount = formatRequested = false;
   failFormat = needsFormat = false; formats = 0;
   failOpen = failMkdir = failRemove = failSeek = failReopen = corruptFlush = truncateClose = false;
@@ -105,7 +115,12 @@ public:
     FakeLittleFS::directories.insert(path); return true;
   }
   bool remove(const char* path) {
-    return FakeLittleFS::mounted && !FakeLittleFS::failRemove && FakeLittleFS::files.erase(path) != 0;
+    FakeLittleFS::removeAttempts.emplace_back(path);
+    if (FakeLittleFS::beforeRemove) FakeLittleFS::beforeRemove(path);
+    if (!FakeLittleFS::mounted || FakeLittleFS::failRemove || !FakeLittleFS::removeBudget) return false;
+    if (!FakeLittleFS::files.erase(path)) return false;
+    --FakeLittleFS::removeBudget;
+    return true;
   }
   fs::File open(const char* path, const char* mode) {
     if (!FakeLittleFS::mounted || FakeLittleFS::failOpen) return {};

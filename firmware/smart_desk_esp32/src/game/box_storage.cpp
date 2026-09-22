@@ -2,6 +2,8 @@
 #include "crc32.h"
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
+#include <cerrno>
 
 namespace BoxStorage {
 using namespace PokemonGame;
@@ -24,6 +26,40 @@ bool snapshotPath(BoxKey key, char* output, size_t capacity) {
   const int length = std::snprintf(output, capacity, "/pokemon/box_%016llx_%016llx.bin",
     static_cast<unsigned long long>(key.storeId), static_cast<unsigned long long>(key.generation));
   return length > 0 && static_cast<size_t>(length) < capacity;
+}
+bool parseSnapshotName(const char* name, BoxKey& output) {
+  if (!name || std::strlen(name) != 41 || std::strncmp(name, "box_", 4) != 0 ||
+      name[20] != '_' || std::strcmp(name + 37, ".bin") != 0) return false;
+  BoxKey key;
+  uint64_t* fields[] = {&key.storeId, &key.generation};
+  for (unsigned field = 0; field < 2; ++field) {
+    for (unsigned digit = 0; digit < 16; ++digit) {
+      const char c = name[4 + field * 17 + digit];
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+      *fields[field] = (*fields[field] << 4) | static_cast<uint64_t>(c <= '9' ? c - '0' : c - 'a' + 10);
+    }
+  }
+  if (!key.storeId || !key.generation) return false;
+  output = key;
+  return true;
+}
+Result visitSnapshotKeys(SnapshotVisitor visitor, void* context) {
+  if (!mounted) return Result::NotMounted;
+  if (!visitor) return Result::InvalidArgument;
+  // /littlefs is the unchanged Arduino LittleFS.begin() default VFS mountpoint.
+  DIR* directory = opendir("/littlefs/pokemon");
+  if (!directory) return errno == ENOENT ? Result::Ok : Result::IoError;
+  Result result = Result::Ok;
+  while (true) {
+    errno = 0;
+    const auto* entry = readdir(directory);
+    if (!entry) { if (errno) result = Result::IoError; break; }
+    BoxKey key;
+    // Unknown file types are preserved, not guessed to be regular files.
+    if (entry->d_type == DT_REG && parseSnapshotName(entry->d_name, key)) visitor(key, context);
+  }
+  if (closedir(directory) != 0) result = Result::IoError;
+  return result;
 }
 Result mount() {
   if (mounted) return Result::Ok;

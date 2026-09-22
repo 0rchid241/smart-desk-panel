@@ -134,7 +134,7 @@ void initializationFailures() {
   save = {}; save.state = createNewGame();
   assert(load(save) == LoadResult::Missing);
   assert(initialize(save) == CommitResult::Committed);
-  assert(save.boxRoot.storeId == ((uint64_t(3) << 32) | 4) && FakeLittleFS::files.size() == 2);
+  assert(save.boxRoot.storeId == ((uint64_t(3) << 32) | 4) && FakeLittleFS::files.size() == 1);
 }
 void pairRecovery() {
   auto previous = fresh();

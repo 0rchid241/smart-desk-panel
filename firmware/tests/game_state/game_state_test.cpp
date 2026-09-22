@@ -550,8 +550,10 @@ void savePairTests();
 void captureStorageTests();
 void boxBrowserTests();
 void buttonsTests();
+void boxGcTests();
 int main() {
   saveWireTests();
+  boxGcTests();
   savePairTests();
   captureStorageTests();
   boxBrowserTests();

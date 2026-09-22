@@ -12,7 +12,8 @@ inline esp_err_t nvs_open(const char* name, int, nvs_handle_t* handle) {
   return ESP_OK;
 }
 inline esp_err_t nvs_get_blob(nvs_handle_t, const char* key, void* output, size_t* length) {
-  if (FakeNvs::failRead) return ESP_FAIL;
+  if (FakeNvs::failRead || !FakeNvs::readBudget) return ESP_FAIL;
+  --FakeNvs::readBudget;
   const auto found = FakeNvs::data.find(std::string("pokemon_g1/") + key);
   if (found == FakeNvs::data.end()) return ESP_ERR_NVS_NOT_FOUND;
   if (output) {

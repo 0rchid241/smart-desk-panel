@@ -15,6 +15,8 @@ int activeSlot = -1;
 uint32_t sequence = 0, activeCrc = 0;
 uint16_t activeVersion = 0;
 bool writable = false, indeterminate = false, mayFormat = false, mayInitialize = false;
+BoxKey activeBoxKey;
+GcReport gcReport;
 struct SlotInfo {
   bool modern = false;
   bool unknown = false;
@@ -64,6 +66,75 @@ bool isIo(LoadResult result) {
 }
 }
 
+namespace {
+bool sameKey(BoxKey a, BoxKey b) { return a.storeId == b.storeId && a.generation == b.generation; }
+struct ProtectedRoots {
+  BoxKey keys[4] = {};
+  size_t count = 0;
+  bool contains(BoxKey key) const {
+    for (size_t i = 0; i < count; ++i) if (sameKey(keys[i], key)) return true;
+    return false;
+  }
+  void add(BoxKey key) { if (key.storeId && !contains(key)) keys[count++] = key; }
+};
+bool readProtectedRoots(ProtectedRoots& roots, const BoxRoot* liveRoot) {
+  if (indeterminate || !writable) return false;
+  for (int slot = 0; slot < 2; ++slot) {
+    GameSave save; SlotInfo info;
+    const auto result = readSlot(slot, save, info);
+    if (result == LoadResult::Missing) continue; // Proven NVS NOT_FOUND only.
+    if (result != LoadResult::Loaded) return false;
+    // Do not discard a decoded root just because validatePair would reject its file.
+    if (save.saveVersion == SAVE_VERSION) roots.add({save.boxRoot.storeId, save.boxRoot.generation});
+  }
+  roots.add(activeBoxKey);
+  if (liveRoot) {
+    if (!isValidBoxRoot(*liveRoot)) return false;
+    roots.add({liveRoot->storeId, liveRoot->generation});
+  }
+  return true;
+}
+struct GcScan {
+  ProtectedRoots roots;
+  BoxKey candidates[16] = {};
+  size_t count = 0;
+  uint32_t kept = 0, deferred = 0;
+};
+void considerSnapshot(BoxKey key, void* context) {
+  auto& scan = *static_cast<GcScan*>(context);
+  if (scan.roots.contains(key)) ++scan.kept;
+  else if (scan.count < 16) scan.candidates[scan.count++] = key;
+  else ++scan.deferred;
+}
+}
+bool snapshotUnreferenced(PokemonGame::BoxKey key) {
+  ProtectedRoots roots;
+  return key.storeId && key.generation && readProtectedRoots(roots, nullptr) && !roots.contains(key);
+}
+GcReport lastBoxGc() { return gcReport; }
+GcReport collectBoxGarbage(const PokemonGame::BoxRoot* liveRoot) {
+  GcReport report;
+  GcScan scan;
+  if (!readProtectedRoots(scan.roots, liveRoot)) return gcReport = report;
+  if (BoxStorage::mount() != BoxStorage::Result::Ok ||
+      BoxStorage::visitSnapshotKeys(considerSnapshot, &scan) != BoxStorage::Result::Ok) {
+    report.status = GcStatus::IoError;
+    return gcReport = report; // No deletion before the WHOLE scan and close succeed.
+  }
+  report.kept = scan.kept; report.deferred = scan.deferred;
+  report.status = scan.deferred ? GcStatus::Partial : GcStatus::Clean;
+  for (size_t i = 0; i < scan.count; ++i) {
+    const BoxKey key = scan.candidates[i];
+    if (scan.roots.contains(key)) continue; // Never pass a protected key to remove.
+    if (BoxStorage::removeSnapshot(key) != BoxStorage::Result::Ok) {
+      report.status = report.removed ? GcStatus::Partial : GcStatus::IoError;
+      break; // Already completed deletions remain safe; next maintenance can retry.
+    }
+    ++report.removed;
+  }
+  return gcReport = report;
+}
+
 LoadResult validatePair(const PokemonGame::GameSave& save) {
   using namespace PokemonGame;
   if (!isValidState(save.state)) return LoadResult::Invalid;
@@ -104,6 +175,7 @@ LoadResult load(PokemonGame::GameSave& save) {
   BoxStorage::unmount();
   writable = indeterminate = mayFormat = mayInitialize = false;
   activeSlot = -1; sequence = activeCrc = 0; activeVersion = 0;
+  activeBoxKey = {}; gcReport = {};
   if (!storage.begin("pokemon_g1", false)) return LoadResult::StorageError;
   GameSave a, b;
   SlotInfo ia, ib;
@@ -124,6 +196,10 @@ LoadResult load(PokemonGame::GameSave& save) {
     writable = true;
     mayInitialize = activeVersion < SAVE_VERSION;
     mayFormat = mayInitialize && !ia.modern && !ib.modern && !ia.unknown && !ib.unknown;
+    if (activeVersion == SAVE_VERSION) {
+      activeBoxKey = {save.boxRoot.storeId, save.boxRoot.generation};
+      collectBoxGarbage(&save.boxRoot);
+    }
     return LoadResult::Loaded;
   }
   if (missing) {
@@ -162,6 +238,8 @@ CommitResult saveDetailed(PokemonGame::GameSave& save) {
       activeSlot = target; sequence = candidate.sequence; activeCrc = info.crc;
       activeVersion = SAVE_VERSION; mayInitialize = false;
       save = candidate;
+      activeBoxKey = {save.boxRoot.storeId, save.boxRoot.generation};
+      collectBoxGarbage(&save.boxRoot); // Best-effort; cannot change this confirmed commit.
       return CommitResult::Committed;
     }
     // A valid unexpected newer main cannot be safely retried with this sequence.
@@ -214,7 +292,7 @@ CommitResult initialize(PokemonGame::GameSave& save) {
   candidate.boxRoot = boxRootFromMetadata(metadata);
   const auto result = saveDetailed(candidate);
   if (result == CommitResult::Committed) save = candidate;
-  // Orphans are deliberately retained, including uncertain commits.
+  // Failed initialization files remain for later proven-safe global GC; uncertainty preserves them.
   return result;
 }
 bool canWrite() { return writable && !indeterminate; }

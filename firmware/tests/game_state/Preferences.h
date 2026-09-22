@@ -6,15 +6,18 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <limits>
 
 namespace FakeNvs {
 inline std::map<std::string, std::vector<uint8_t>> data;
 inline bool failOpen = false, failRead = false, partialWrite = false, corruptWrite = false;
 inline bool failReadAfterWrite = false, rejectWrite = false;
 inline unsigned writes = 0;
+inline size_t readBudget = std::numeric_limits<size_t>::max();
 inline void reset() {
   data.clear(); failOpen = failRead = partialWrite = corruptWrite = false; writes = 0;
   failReadAfterWrite = rejectWrite = false;
+  readBudget = std::numeric_limits<size_t>::max();
 }
 }
 class Preferences {

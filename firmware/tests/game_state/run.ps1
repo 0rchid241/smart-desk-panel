@@ -15,7 +15,7 @@ $compilerArgs = @('/nologo', '/std:c++17', '/utf-8', '/EHsc', '/W4', '/WX', '/MD
   "/Fo$testBuild/", "/Fe$testBuild/game_state_test.exe",
   "$game/pokemon.cpp", "$game/pokemon_record_codec.cpp", "$game/game_state.cpp", "$game/save_data.cpp", "$game/save_storage.cpp", "$game/capture_storage.cpp", "$game/box_browser.cpp", "$game/box_data.cpp", "$game/box_storage.cpp",
   "$game/exploration.cpp", "$game/encounter.cpp", "$game/type.cpp", "$game/move.cpp", "$game/battle.cpp",
-  "$PSScriptRoot/game_state_test.cpp", "$PSScriptRoot/save_wire_test.cpp", "$PSScriptRoot/save_pair_test.cpp", "$PSScriptRoot/capture_storage_test.cpp", "$PSScriptRoot/box_browser_test.cpp", "$PSScriptRoot/buttons_test.cpp", "$game/../hardware/buttons.cpp", "$PSScriptRoot/battle_test.cpp", '/link', "/LIBPATH:$msvc/lib/x64",
+  "$PSScriptRoot/game_state_test.cpp", "$PSScriptRoot/save_wire_test.cpp", "$PSScriptRoot/save_pair_test.cpp", "$PSScriptRoot/box_gc_test.cpp", "$PSScriptRoot/capture_storage_test.cpp", "$PSScriptRoot/box_browser_test.cpp", "$PSScriptRoot/buttons_test.cpp", "$game/../hardware/buttons.cpp", "$PSScriptRoot/battle_test.cpp", '/link', "/LIBPATH:$msvc/lib/x64",
   "/LIBPATH:$sdk/Lib/$sdkVersion/ucrt/x64", "/LIBPATH:$sdk/Lib/$sdkVersion/um/x64")
 & "$msvc/bin/Hostx64/x64/cl.exe" @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Host compilation failed.' }

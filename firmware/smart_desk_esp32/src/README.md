@@ -884,3 +884,97 @@ OLED1 이름/sprite/성별/shiny, 목록 복귀 위치, Status/Party/지역선�
 전투 기술/볼 메뉴 BACK 후 HP/PP/턴과 볼 수가 유지되고 정상 실행되는지, 결과 연출은
 BACK으로 취소되지 않는지 확인합니다. DESK Timer/알림, GAME/DESK 전환과 재부팅 후
 세이브 유지도 실기 확인 대상입니다.
+
+## G5-C2-GC — immutable Box snapshot maintenance
+
+Box mutation은 source를 덮어쓰지 않고 새 snapshot을 완성한 다음 NVS root를 commit합니다.
+전원 차단 시 이전 A/B pair로 복구하기 위해 immutable snapshot과 두 NVS root를 유지합니다.
+현재 GameSave만 보고 old generation을 삭제하면 A/B rollback을 깨뜨리므로 GC는 반드시
+`pokemon_g1/save_a`, `save_b`를 다시 읽어 판단합니다. 앞선 C의 orphan 전부 보존 정책은
+아래의 확정 가능한 cleanup으로 대체됩니다. SAVE_VERSION=5, wire/BoxRoot/Box format,
+BOX_CAPACITY=2048, partition, NVS key와 commit/latch/validatePair 의미는 그대로입니다.
+
+### 책임과 삭제 조건
+
+- `GameSaveStorage::collectBoxGarbage(optionalLiveRoot)`가 보호 집합과 삭제를 조정합니다.
+  정상 decode된 v5 A/B root를 모두 보호합니다. pair 검증에서 불완전한 것으로 판단될 root도
+  NVS가 decode된다면 보호합니다. 마지막 확정 load/commit root 및 전달된 live root도 보호합니다.
+- 명확한 NOT_FOUND는 root 없음, 정상 decode된 v1~v4는 Box 없는 legacy로 취급합니다.
+  손상/unknown/future version/NVS I/O/Indeterminate/쓰기 불가 상태에서는 전역 GC no-op입니다.
+- `BoxStorage::visitSnapshotKeys()`는 `/pokemon`의 regular file만 열거합니다. 현재 canonical
+  lowercase `box_<16hex storeId>_<16hex generation>.bin`에 정확히 일치하고 두 값이 nonzero인
+  이름만 후보입니다. 다른 이름/대문자 변형/임시 파일/디렉터리/하위 경로/다른 파일 타입은 보존합니다.
+  다른 storeId도 동일하게 A/B 비참조가 확인되면 삭제 가능합니다. 파일 내용을 새 root로 채택하지 않습니다.
+- Arduino FS `openNextFile()`은 EOF와 오류를 구별하지 못하므로 BoxStorage 안에서만 POSIX
+  `opendir/readdir/closedir` 및 errno를 사용합니다. 기존 기본 VFS mountpoint `/littlefs`를 사용하며
+  전체 열거와 close가 성공하기 전에는 한 파일도 지우지 않습니다. mount/열거/close 오류는 no-op입니다.
+- 후보 16개(256 bytes)만 임시 보관하고 directory 전체를 스캔합니다. 초과분은 deferred로 남기며
+  다음 호출에서 처리합니다. 영구 index나 Box 전체 RAM 배열은 추가하지 않습니다.
+- GC 결과 `Clean / SkippedUnsafe / IoError / Partial`과 removed/kept/deferred는 commit 결과와
+  별개입니다. `lastBoxGc()`로 마지막 maintenance 결과를 확인할 수 있습니다. per-frame 호출이나
+  Serial spam은 없습니다. remove 실패 시 중단하고 이미 완료한 안전 삭제는 유지합니다.
+
+### 자동 실행과 transaction orphan
+
+v5 load 성공 후와 `saveDetailed()`의 readback/pair 검증으로 Committed가 확정된 후 자동 GC합니다.
+GC 오류는 load 성공 또는 Committed를 실패로 바꾸지 않으며 NVS나 게임 state를 수정하지 않습니다.
+Indeterminate 직후에는 호출하지 않고, 직접 호출해도 no-op이며 기존 write latch를 유지합니다.
+
+CaptureStorage는 후보 경로가 없다는 기존 preflight에 더해, mutation 전에
+`snapshotUnreferenced(key)`로 A/B와 현재 root의 비참조를 확인합니다. 이 근거가 있고 이번 시도가
+생성한 exact destination만 mutation/추가 validate 실패 또는 NotCommitted에서 best-effort로
+정리합니다. NVS torn write로 target이 이후 decode 불가가 되어도 **쓰기 전 근거 + NotCommitted**
+계약으로 이번 파일을 rollback할 수 있습니다. Collision 파일은 exact cleanup하지 않습니다.
+정리 실패나 시작부터 해석 불가한 NVS가 있으면 파일을 보존합니다. 이런 unsafe 상태에서는 공간
+회수보다 복구를 우선하며 정상 save가 slot을 복구한 뒤 전역 GC가 다시 정리합니다.
+정상 NVS에서 확정 실패 cleanup이 성공하면 같은 free generation을 재사용하므로, 반복 실패만으로
+8개 후보가 orphan으로 차는 문제를 막습니다. Indeterminate destination은 반드시 보존합니다.
+
+재부팅 후 candidate가 실제 commit되어 있으면 그 root를 보호하고, old pair가 active이고
+A/B 모두 해석 가능하면 비참조 candidate를 정리합니다. 손상 slot이 남으면 load가 rollback에
+성공해도 GC는 skip합니다. GC 도중 전원 차단은 원래 비참조인 파일만 일부 삭제한 상태이므로
+A/B 복구 후보는 그대로입니다. 열려 있는 current-root Browser도 삭제 대상이 아닙니다.
+
+### 공간 및 후속 E
+
+정상 steady state는 서로 다른 A/B root이면 2개, 같은 root이면 1개입니다. 파일 payload는 각각
+98,944 bytes(96.625 KiB), 49,472 bytes(48.3125 KiB)이며 mutation 중 보통 3개
+148,416 bytes(144.9375 KiB)까지 필요합니다. LittleFS metadata/블록 반올림/여유 공간은 별도입니다.
+896 KiB partition을 모두 사용 가능 용량으로 계산하지 않습니다. unsafe/정리 실패/배치 초과 시
+더 많은 파일이 남는 것은 허용하며, 수를 맞추려고 보호 snapshot을 삭제하지 않습니다.
+
+후속 E는 Browser를 닫고 immutable mutation → candidate root → `saveDetailed()` → Committed에만
+live 반영 → Browser 재열기 순서로 연결합니다. saveDetailed의 maintenance를 재사용하고 실패 시
+위 exact ownership/NotCommitted 규칙을 적용합니다. 이동·교체·방생으로 snapshot이 더 자주 생기므로
+GC를 먼저 구현합니다. 이번 단계에는 E 기능과 UI 변경이 없습니다.
+
+### GC 검증 결과
+
+`firmware/tests/game_state/run.ps1` 전체 PASS (MSVC `/W4 /WX`). 신규 GC 테스트는 두 root/같은
+root/missing/legacy, corrupt/future/NVS I/O와 Indeterminate no-op, strict 이름/다른 store,
+전체 enumeration/close 실패 시 무삭제, remove 실패 후 commit 유지, 12회 확정 실패 재시도,
+partial destination/torn target exact cleanup, 재부팅 양쪽 결과, 삭제 3개 후 power loss,
+열린 Browser 보호, 24회 포획과 일반 save의 1~2 snapshot 유지 및 bounded batch를 검사합니다.
+기존 migration/pair rollback/Party·Box 포획/full Box/D Browser/D.1 UI·BACK/배틀·탐험 회귀도 PASS입니다.
+호스트 POSIX fake는 EOF와 errno 오류, open/read/close 오류를 구별하고 실제 VFS mount 경로와
+한 단계 regular-file enumeration 의미를 재현합니다. 테스트 로그:
+`build/game-state-tests/g5-c2-gc-results.txt`.
+
+| GC ESP32 core 3.3.11 / Dev Module / Huge APP | Flash | 전역 RAM |
+| --- | ---: | ---: |
+| 애셋 포함 | 1,527,844 bytes (48%) | 81,592 bytes (24%) |
+| fallback | 1,524,836 bytes (48%) | 81,584 bytes (24%) |
+
+두 구성 compile/link PASS. D.1 대비 전역 RAM +32 bytes이며 GC 후보 배열은 임시 stack
+256 bytes입니다(호출 프레임/기존 codec scratch는 별도). 최종 build 소스·dependency와
+partition CSV/binary/MD5를 확인했습니다. LittleFS subtype 0x83, NVS 0x9000/0x5000 및
+전체 partition 배치는 그대로입니다. 기존 spiffs label 경고 외 컴파일 오류는 없습니다.
+로그: `build/g5-c2-gc-asset-build.txt`, `build/g5-c2-gc-fallback-build.txt`.
+`git diff --check` PASS. 실제 upload/format/commit/push는 실행하지 않았습니다.
+
+실기에서는 기존 세이브로 재부팅 후 Party/Box 개체가 유지되는지, 파티가 찬 상태에서 20회 이상
+Box 포획/일반 저장/재부팅을 반복해 기존 약 18 snapshot 한계를 넘어서도 저장되는지 확인합니다.
+`lastBoxGc()`의 결과/removed/kept/deferred를 디버거로 확인할 수 있습니다. 삭제 I/O 실패나
+손상 slot은 성공 저장을 실패로 바꾸지 않고 파일 보존으로 처리되는지도 테스트 세이브로 확인합니다.
+전원 차단 검증은 백업된 테스트 세이브로 수행하고 A/B 복구 및 현재 Box 개체 유지 여부를 봅니다.
+실기 LittleFS 메타데이터 비용과 GC latency/heap/stack 여유는 호스트에서 측정한 값이 아닙니다.

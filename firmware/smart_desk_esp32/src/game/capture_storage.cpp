@@ -39,21 +39,31 @@ Result attempt(GameSave& live, CaptureBall ball, BattleCaptureReport& report) {
   GameSave candidate = live;
   BattleCaptureReport captured;
   if (!attemptBattleCapture(candidate.state, ball, &captured, destination)) return Result::Unavailable;
+  const BoxKey createdKey{source.storeId, generation};
+  bool rollbackSafe = false;
   if (captured.captured && destination == CaptureDestination::Box) {
+    // Preflight above proved this exact path absent. Record A/B non-reference
+    // BEFORE mutation/NVS write; a torn NotCommitted target may no longer decode.
+    rollbackSafe = GameSaveStorage::snapshotUnreferenced(createdKey);
     const BoxMutation mutation{BoxMutationKind::Insert, slot, captured.caught};
-    if (BoxStorage::mutate(source, generation, mutation) != BoxStorage::Result::Ok)
+    const auto mutated = BoxStorage::mutate(source, generation, mutation);
+    if (mutated != BoxStorage::Result::Ok) {
+      if (rollbackSafe && mutated != BoxStorage::Result::Collision) BoxStorage::removeSnapshot(createdKey);
       return Result::StorageError;
+    }
     BoxMetadata metadata;
-    if (BoxStorage::validate({source.storeId, generation}, metadata) != BoxStorage::Result::Ok)
+    if (BoxStorage::validate(createdKey, metadata) != BoxStorage::Result::Ok) {
+      if (rollbackSafe) BoxStorage::removeSnapshot(createdKey);
       return Result::StorageError;
+    }
     candidate.boxRoot = boxRootFromMetadata(metadata);
   }
-  // No cleanup here: failed/uncertain writes retain the exact orphan and both
-  // A/B roots. A later bounded retry uses another generation from the same source.
   switch (GameSaveStorage::saveDetailed(candidate)) {
     case GameSaveStorage::CommitResult::Committed:
       live = candidate; report = captured; return Result::Committed;
-    case GameSaveStorage::CommitResult::NotCommitted: return Result::NotCommitted;
+    case GameSaveStorage::CommitResult::NotCommitted:
+      if (rollbackSafe) BoxStorage::removeSnapshot(createdKey);
+      return Result::NotCommitted;
     case GameSaveStorage::CommitResult::Indeterminate: return Result::Indeterminate;
   }
   return Result::StorageError;

@@ -13,6 +13,12 @@ enum class Result { Ok, NotMounted, Missing, Collision, Invalid, IoError,
                     InvalidArgument, EmptySlot, SlotOccupied, NotFound, DuplicateId };
 constexpr size_t PATH_SIZE = 52;
 bool snapshotPath(BoxKey key, char* output, size_t capacity);
+// Canonical lowercase basename only; never paths, directories or extension variants.
+bool parseSnapshotName(const char* name, BoxKey& output);
+using SnapshotVisitor = void (*)(BoxKey key, void* context);
+// Read-only full directory scan. Visitor MUST NOT mutate storage. No recursion.
+// POSIX errno distinguishes end-of-directory from I/O errors (FS openNextFile cannot).
+Result visitSnapshotKeys(SnapshotVisitor visitor, void* context);
 Result mount(); // Never formats on failure.
 // Destructive: only the main-save coordinator may authorize first-use initialization.
 // Never call for a v5/future/unknown NVS record. mount() itself never formats.
