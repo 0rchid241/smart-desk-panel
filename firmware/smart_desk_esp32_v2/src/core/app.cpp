@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "../services/display_service.h"
 #include "../services/lin_server_service.h"
 #include "../services/network_service.h"
 
@@ -14,6 +15,7 @@ void init() {
   Serial.println();
   Serial.println("DeskMon v2 boot");
 
+  DisplayService::init();
   NetworkService::init();
   LinServerService::init();
 }
@@ -21,6 +23,7 @@ void init() {
 void update() {
   NetworkService::update();
   LinServerService::update();
+  DisplayService::update();
 }
 
 }  // namespace App
