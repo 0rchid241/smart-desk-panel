@@ -18,4 +18,15 @@ constexpr uint8_t BUTTON_RIGHT_PIN = 27;
 
 constexpr unsigned long BUTTON_DEBOUNCE_MS = 30;
 
+constexpr char NTP_SERVER_PRIMARY[] =
+    "pool.ntp.org";
+
+constexpr char NTP_SERVER_SECONDARY[] =
+    "time.google.com";
+
+constexpr long TIME_GMT_OFFSET_SEC =
+    9L * 60L * 60L;
+
+constexpr int TIME_DAYLIGHT_OFFSET_SEC = 0;
+
 }  // namespace AppConfig

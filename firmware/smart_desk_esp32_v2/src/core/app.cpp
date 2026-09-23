@@ -6,6 +6,7 @@
 #include "../services/input_service.h"
 #include "../services/lin_server_service.h"
 #include "../services/network_service.h"
+#include "../services/time_service.h"
 
 namespace App {
 
@@ -19,11 +20,13 @@ void init() {
   DisplayService::init();
   InputService::init();
   NetworkService::init();
+  TimeService::init();
   LinServerService::init();
 }
 
 void update() {
   NetworkService::update();
+  TimeService::update();
   LinServerService::update();
   InputService::update();
   DisplayService::update();
