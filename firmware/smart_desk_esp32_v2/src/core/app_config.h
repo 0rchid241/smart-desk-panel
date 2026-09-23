@@ -17,6 +17,8 @@ constexpr uint8_t BUTTON_OK_PIN = 26;
 constexpr uint8_t BUTTON_RIGHT_PIN = 27;
 
 constexpr unsigned long BUTTON_DEBOUNCE_MS = 30;
+constexpr unsigned long BUTTON_LONG_HOLD_MS = 750;
+constexpr unsigned long MODE_SWITCH_HOLD_MS = 1000;
 
 constexpr char NTP_SERVER_PRIMARY[] =
     "pool.ntp.org";

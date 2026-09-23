@@ -6,6 +6,7 @@
 #include <Wire.h>
 
 #include "lin_server_service.h"
+#include "mode_service.h"
 #include "network_service.h"
 
 namespace DisplayService {
@@ -30,11 +31,15 @@ bool ready = false;
 
 bool lastWifiConnected = false;
 bool lastLinAvailable = false;
+ModeService::Mode lastMode =
+    ModeService::Mode::SMART_DESK;
+
 bool hasRenderedStatus = false;
 
 void renderStatus(
     bool wifiConnected,
-    bool linAvailable) {
+    bool linAvailable,
+    ModeService::Mode mode) {
   display.clearDisplay();
 
   display.setTextColor(SSD1306_WHITE);
@@ -42,9 +47,19 @@ void renderStatus(
   display.setTextWrap(false);
 
   display.setCursor(0, 0);
-  display.println("DeskMon v2");
 
-  display.drawLine(0, 12, 127, 12, SSD1306_WHITE);
+  if (mode == ModeService::Mode::SMART_DESK) {
+    display.println("SMART DESK");
+  } else {
+    display.println("DESKMON");
+  }
+
+  display.drawLine(
+      0,
+      12,
+      127,
+      12,
+      SSD1306_WHITE);
 
   display.setCursor(0, 24);
   display.print("WiFi: ");
@@ -99,15 +114,22 @@ void update() {
   const bool linAvailable =
       LinServerService::isAvailable();
 
+  const ModeService::Mode mode =
+      ModeService::current();
+
   if (!hasRenderedStatus ||
       wifiConnected != lastWifiConnected ||
-      linAvailable != lastLinAvailable) {
+      linAvailable != lastLinAvailable ||
+      mode != lastMode) {
     renderStatus(
         wifiConnected,
-        linAvailable);
+        linAvailable,
+        mode);
 
     lastWifiConnected = wifiConnected;
     lastLinAvailable = linAvailable;
+    lastMode = mode;
+
     hasRenderedStatus = true;
   }
 }

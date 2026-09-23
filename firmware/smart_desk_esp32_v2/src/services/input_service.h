@@ -2,15 +2,18 @@
 
 namespace InputService {
 
-enum class Button {
+enum class Event {
+  NONE,
   LEFT,
   OK,
   RIGHT,
+  BACK,
+  MODE_SWITCH,
 };
 
 void init();
 void update();
 
-bool consumePressed(Button button);
+Event consumeEvent();
 
 }  // namespace InputService
